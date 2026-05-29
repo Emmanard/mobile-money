@@ -36,9 +36,13 @@ export function generateApiKey(): string {
   return crypto.randomBytes(32).toString("hex");
 }
 
+interface ApiKeyUser {
+  apiKeys?: ApiKey[];
+}
+
 // Create a new API key with optional scoped permissions
 export function createApiKey(
-  user: any,
+  user: ApiKeyUser,
   options?: { permissions?: number; label?: string },
 ): ApiKey {
   if (!user.apiKeys) {
@@ -59,7 +63,7 @@ export function createApiKey(
 }
 
 // Validate API key
-export function validateApiKey(user: any, key: string): ApiKey | null {
+export function validateApiKey(user: ApiKeyUser, key: string): ApiKey | null {
   if (!user.apiKeys) return null;
 
   const validKey = user.apiKeys.find(

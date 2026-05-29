@@ -36,17 +36,11 @@ import { transactionDisputeRoutes, disputeRoutes } from "./routes/disputes";
 import { statsRoutes } from "./routes/stats";
 import { contactsRoutes } from "./routes/contacts";
 import { reportsRoutes } from "./routes/reports";
-import { statementsRoutes } from "./routes/statements";
 import feesRoutes from "./routes/fees";
-import stellarRoutes from "./routes/stellar";
-import htlcRoutes from "./routes/htlc";
 import { createKYCRoutes } from "./routes/kycRoutes";
-import { vaultRoutes } from "./routes/vaults";
 import { adminRoutes } from "./routes/admin";
 import kycTierUpgradeRoutes from "./routes/kycTierUpgradeRoutes";
-import { makerCheckerRoutes } from "./routes/makerChecker";
 import { userRoutes } from "./routes/users";
-import { auditRoutes } from "./routes/audit";
 import { errorHandler } from "./middleware/errorHandler";
 import {
   connectRedis,
