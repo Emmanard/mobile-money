@@ -14,6 +14,7 @@ import fs from "fs";
 import session from "express-session";
 import * as Sentry from "@sentry/node";
 import { register } from "prom-client";
+import { startHeartbeat } from "./services/metrics";
 import { startStellarExporter } from "./services/stellarExporter";
 
 import {
@@ -583,6 +584,8 @@ async function initializeRuntime(): Promise<void> {
     server = http2Server as unknown as Server;
   } else {
     server = app.listen(PORT, () =>
+    // Start system heartbeat for Prometheus monitoring
+    startHeartbeat();
       console.log(`HTTP/1.1 server running on http://localhost:${PORT}`),
     );
 

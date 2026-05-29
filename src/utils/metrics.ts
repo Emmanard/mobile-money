@@ -173,3 +173,26 @@ export const crossChainAnomalyTotal = new Counter({
   labelNames: ["chain", "asset", "reason"],
   registers: [register],
 });
+
+// System Heartbeat Metrics
+export const systemHeartbeat = new Gauge({
+  name: "system_heartbeat",
+  help: "System heartbeat indicator (1 = alive, 0 = down)",
+  registers: [register],
+});
+
+export const systemUptimeSeconds = new Gauge({
+  name: "system_uptime_seconds",
+  help: "System uptime in seconds",
+  registers: [register],
+});
+
+export const systemLastHeartbeatTimestamp = new Gauge({
+  name: "system_last_heartbeat_timestamp",
+  help: "Unix timestamp of the last heartbeat",
+  registers: [register],
+});
+
+// Initialize heartbeat to 1 on module load
+systemHeartbeat.set(1);
+systemLastHeartbeatTimestamp.set(Math.floor(Date.now() / 1000));
