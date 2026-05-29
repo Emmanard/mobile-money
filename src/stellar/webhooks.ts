@@ -3,9 +3,13 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { z } from "zod";
 import { TransactionModel, TransactionStatus } from "../models/transaction";
 import { notifyTransactionWebhook, WebhookEvent } from "../services/webhook";
+import { ingestRateLimiter } from "../middleware/ingestRateLimit";
 
 const router = Router();
 const transactionModel = new TransactionModel();
+
+// Rate-limit ingest traffic before signature verification and DB writes.
+router.use(ingestRateLimiter);
 
 interface RawBodyRequest extends Request {
   rawBody?: Buffer;
