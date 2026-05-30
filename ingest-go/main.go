@@ -120,7 +120,22 @@ func initMessaging() error {
 
 	if natsEnabled {
 		var err error
-		nc, err = nats.Connect(natsURL)
+		nc, err = nats.Connect(natsURL,
+			nats.MaxReconnects(-1),
+			nats.ReconnectWait(2*time.Second),
+			nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
+				log.Printf("[nats] disconnected: %v", err)
+			}),
+			nats.ReconnectHandler(func(nc *nats.Conn) {
+				log.Printf("[nats] reconnected to %s", nc.ConnectedUrl())
+			}),
+			nats.ClosedHandler(func(nc *nats.Conn) {
+				log.Printf("[nats] connection permanently closed")
+			}),
+			nats.ErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+				log.Printf("[nats] async error on subject %s: %v", sub.Subject, err)
+			}),
+		)
 		if err != nil {
 			return fmt.Errorf("nats connect: %w", err)
 		}
@@ -130,7 +145,6 @@ func initMessaging() error {
 		}
 		log.Printf("[nats] connected to %s", natsURL)
 	}
-
 	return nil
 }
 

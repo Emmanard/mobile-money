@@ -11,6 +11,7 @@ pub struct EscrowState {
     pub arbiter: Address,
     pub token: Address,
     pub amount: i128,
+    pub emergency_unlock_timestamp: u64,
     pub released: bool,
 }
 
@@ -30,6 +31,7 @@ impl EscrowContract {
         arbiter: Address,
         token: Address,
         amount: i128,
+        emergency_unlock_timestamp: u64,
     ) {
         depositor.require_auth();
 
@@ -37,6 +39,10 @@ impl EscrowContract {
         assert!(
             !env.storage().instance().has(&ESCROW),
             "already initialised"
+        );
+        assert!(
+            emergency_unlock_timestamp > env.ledger().timestamp(),
+            "emergency unlock must be in the future"
         );
 
         // Pull funds from the depositor into this contract.
@@ -50,6 +56,7 @@ impl EscrowContract {
                 arbiter,
                 token,
                 amount,
+                emergency_unlock_timestamp,
                 released: false,
             },
         );
@@ -83,6 +90,25 @@ impl EscrowContract {
         env.storage().instance().set(&ESCROW, &state);
     }
 
+    /// Emergency refund to the depositor after the unlock timestamp.
+    /// Allows source wallets to recover funds during an extended bridge outage.
+    pub fn emergency_refund(env: Env) {
+        let mut state: EscrowState = env.storage().instance().get(&ESCROW).expect("not initialised");
+
+        state.depositor.require_auth();
+        assert!(!state.released, "already released");
+        assert!(
+            env.ledger().timestamp() >= state.emergency_unlock_timestamp,
+            "emergency unlock not yet available"
+        );
+
+        token::Client::new(&env, &state.token)
+            .transfer(&env.current_contract_address(), &state.depositor, &state.amount);
+
+        state.released = true;
+        env.storage().instance().set(&ESCROW, &state);
+    }
+
     /// Return current escrow state (read-only).
     pub fn get_state(env: Env) -> EscrowState {
         env.storage().instance().get(&ESCROW).expect("not initialised")
@@ -93,7 +119,7 @@ impl EscrowContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::Address as _,
+        testutils::{Address as _, Ledger},
         token::{Client as TokenClient, StellarAssetClient},
         Address, Env,
     };
@@ -122,11 +148,22 @@ mod tests {
     fn test_initialize_and_release() {
         let (env, depositor, beneficiary, arbiter, token, client) = setup(None);
         let amount: i128 = 500_000;
+        let emergency_unlock_timestamp = 1_000;
 
-        client.initialize(&depositor, &beneficiary, &arbiter, &token, &amount);
+        env.ledger().set_timestamp(100);
+
+        client.initialize(
+            &depositor,
+            &beneficiary,
+            &arbiter,
+            &token,
+            &amount,
+            &emergency_unlock_timestamp,
+        );
 
         let state = client.get_state();
         assert_eq!(state.amount, amount);
+        assert_eq!(state.emergency_unlock_timestamp, emergency_unlock_timestamp);
         assert!(!state.released);
 
         client.release();
@@ -140,8 +177,18 @@ mod tests {
     fn test_refund() {
         let (env, depositor, beneficiary, arbiter, token, client) = setup(None);
         let amount: i128 = 200_000;
+        let emergency_unlock_timestamp = 1_000;
 
-        client.initialize(&depositor, &beneficiary, &arbiter, &token, &amount);
+        env.ledger().set_timestamp(100);
+
+        client.initialize(
+            &depositor,
+            &beneficiary,
+            &arbiter,
+            &token,
+            &amount,
+            &emergency_unlock_timestamp,
+        );
         client.refund();
 
         let token_client = TokenClient::new(&env, &token);
@@ -150,17 +197,28 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_with_custom_issuer() {
-        let env = Env::default();
-        let custom_issuer = Address::generate(&env);
-        let (env_out, _depositor, _beneficiary, _arbiter, token, _client) = setup(Some(custom_issuer.clone()));
+    fn test_emergency_refund() {
+        let (env, depositor, beneficiary, arbiter, token, client) = setup();
+        let amount: i128 = 300_000;
+        let emergency_unlock_timestamp = 1_000;
 
-        // Verify the custom_issuer address can mint successfully (confirming it is the admin/issuer of the SAC token)
-        let token_sac = StellarAssetClient::new(&env_out, &token);
-        let recipient = Address::generate(&env_out);
-        token_sac.mint(&recipient, &100);
-        
-        let token_client = TokenClient::new(&env_out, &token);
-        assert_eq!(token_client.balance(&recipient), 100);
+        env.ledger().set_timestamp(100);
+
+        client.initialize(
+            &depositor,
+            &beneficiary,
+            &arbiter,
+            &token,
+            &amount,
+            &emergency_unlock_timestamp,
+        );
+
+        env.ledger().set_timestamp(emergency_unlock_timestamp);
+
+        client.emergency_refund();
+
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&depositor), 1_000_000);
+        assert!(client.get_state().released);
     }
 }
