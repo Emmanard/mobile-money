@@ -3,14 +3,16 @@ import { AccountingService, AccountingProvider } from "../services/accounting";
 import { requireAuth } from "../middleware/auth";
 import { validateRequest } from "../middleware/validation";
 import { z } from "zod";
+import { v4 as uuidv4 } from "uuid";
 
 const router = Router();
 const accountingService = new AccountingService();
 
 // Validation schemas
-const connectQuickBooksSchema = z.object({
+const connectQuickBooksCallbackSchema = z.object({
   code: z.string(),
   realmId: z.string(),
+  state: z.string(),
 });
 
 const connectXeroSchema = z.object({
@@ -33,42 +35,51 @@ const syncDataSchema = z.object({
 router.use(requireAuth);
 
 // Get authorization URLs
-router.get("/auth/quickbooks/url", async (req: Request, res: Response, next: NextFunction) => {
+router.get("/quickbooks/auth", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const authUrl = accountingService.getQuickBooksAuthUrl();
-    res.json({ authUrl });
+    const state = uuidv4();
+    // Store state in session for CSRF protection
+    (req.session as any).qbOAuthState = state;
+    
+    const authUrl = accountingService.getQuickBooksAuthUrl(state);
+    res.redirect(authUrl);
   } catch (error) {
     next(error);
   }
 });
 
-router.get("/auth/xero/url", async (req: Request, res: Response, next: NextFunction) => {
+router.get("/xero/auth", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const authUrl = accountingService.getXeroAuthUrl();
-    res.json({ authUrl });
+    const state = uuidv4();
+    (req.session as any).xeroOAuthState = state;
+    
+    const authUrl = accountingService.getXeroAuthUrl(state);
+    res.redirect(authUrl);
   } catch (error) {
     next(error);
   }
 });
 
 // Handle OAuth callbacks
-router.post(
-  "/auth/quickbooks/callback",
-  validateRequest(connectQuickBooksSchema),
+router.get(
+  "/quickbooks/callback",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { code, realmId } = req.body;
+      const { code, realmId, state } = req.query as { code: string; realmId: string; state: string };
       const userId = (req as any).user.id;
+
+      // Validate state
+      const savedState = (req.session as any).qbOAuthState;
+      if (!state || state !== savedState) {
+        return res.status(400).json({ error: "Invalid state parameter" });
+      }
+      delete (req.session as any).qbOAuthState;
 
       const connection = await accountingService.handleQuickBooksCallback(code, realmId, userId);
       
-      res.status(201).json({
-        connection: {
-          id: connection.id,
-          provider: connection.provider,
-          isActive: connection.isActive,
-          createdAt: connection.createdAt,
-        },
+      res.json({
+        message: "QuickBooks connected successfully",
+        connectionId: connection.id,
       });
     } catch (error) {
       next(error);
@@ -76,23 +87,25 @@ router.post(
   }
 );
 
-router.post(
-  "/auth/xero/callback",
-  validateRequest(connectXeroSchema),
+router.get(
+  "/xero/callback",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { code } = req.body;
+      const { code, state } = req.query as { code: string; state: string };
       const userId = (req as any).user.id;
+
+      // Validate state
+      const savedState = (req.session as any).xeroOAuthState;
+      if (!state || state !== savedState) {
+        return res.status(400).json({ error: "Invalid state parameter" });
+      }
+      delete (req.session as any).xeroOAuthState;
 
       const connection = await accountingService.handleXeroCallback(code, userId);
       
-      res.status(201).json({
-        connection: {
-          id: connection.id,
-          provider: connection.provider,
-          isActive: connection.isActive,
-          createdAt: connection.createdAt,
-        },
+      res.json({
+        message: "Xero connected successfully",
+        connectionId: connection.id,
       });
     } catch (error) {
       next(error);

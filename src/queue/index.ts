@@ -11,9 +11,14 @@ import {
   startProviderBalanceAlertWorker,
 } from "./providerBalanceAlertWorker";
 import { closeAccountMergeWorker } from "./accountMergeWorker";
+import {
+  startAccountingTokenRefreshWorker,
+  closeAccountingTokenRefreshWorker,
+} from "./accountingTokenRefreshWorker";
 
 export async function shutdownQueue(): Promise<void> {
   console.log("Shutting down queues...");
+  await closeAccountingTokenRefreshWorker().catch(() => undefined);
   await closeProviderBalanceAlertWorker().catch(() => undefined);
   await closeProviderBalanceAlertQueue().catch(() => undefined);
   await closeAccountMergeWorker().catch(() => undefined);
@@ -73,6 +78,11 @@ export {
   accountMergeWorker,
   closeAccountMergeWorker,
 } from "./accountMergeWorker";
+
+export {
+  startAccountingTokenRefreshWorker,
+  closeAccountingTokenRefreshWorker,
+};
 
 // Trace-ID propagation utilities
 export { withTraceId, traceIdFromJob, childLoggerWithTrace, TRACE_ID_KEY } from "./trace";

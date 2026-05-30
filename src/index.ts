@@ -88,6 +88,8 @@ import exchangeRateBufferRoutes from "./routes/exchangeRateBuffers";
 import adminAssetRoutes from "./routes/admin/assets";
 import settingsRoutes from "./routes/settings";
 import merchantWebhooksRouter from "./routes/merchantWebhooks";
+import accountingRoutes from "./routes/accounting";
+
 
 
 
@@ -403,6 +405,7 @@ app.use("/api/exchange-rate-buffers", exchangeRateBufferRoutes);
 app.use("/api/admin/assets", adminAssetRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/merchant/webhooks", merchantWebhooksRouter);
+app.use("/api/accounting", accountingRoutes);
 
 // Subscriptions management
 app.use("/api/subscriptions", subscriptionsRoutes);
@@ -586,9 +589,13 @@ async function initializeRuntime(): Promise<void> {
     await layeredCache.init();
     console.log("Layered cache (L1/L2) initialized");
 
-    const { startProviderBalanceAlertWorker, scheduleProviderBalanceAlertJob } =
-      await import("./queue");
+    const {
+      startProviderBalanceAlertWorker,
+      scheduleProviderBalanceAlertJob,
+      startAccountingTokenRefreshWorker,
+    } = await import("./queue");
     startProviderBalanceAlertWorker();
+    startAccountingTokenRefreshWorker();
     await scheduleProviderBalanceAlertJob();
     console.log("Provider balance alert queue initialized");
   } catch (err) {

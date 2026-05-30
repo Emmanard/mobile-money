@@ -2,6 +2,9 @@ import { pool } from "../config/database";
 import { redisClient } from "../config/redis";
 import axios from "axios";
 import { v4 as uuidv4 } from "uuid";
+import { encryptField, decryptField } from "../utils/encryption";
+import { addAccountingTokenRefreshJob, removeAccountingTokenRefreshJob } from "../queue/accountingTokenRefreshQueue";
+import { logger } from "./logger";
 
 export enum AccountingProvider {
   QUICKBOOKS = "quickbooks",
@@ -85,7 +88,7 @@ export class AccountingService {
   }
 
   // OAuth2 Authorization URLs
-  getQuickBooksAuthUrl(): string {
+  getQuickBooksAuthUrl(state: string = uuidv4()): string {
     const scopes = [
       "com.intuit.quickbooks.accounting",
       "com.intuit.quickbooks.payment",
@@ -96,17 +99,18 @@ export class AccountingService {
       redirect_uri: this.quickbooksRedirectUri,
       response_type: "code",
       scope: scopes,
-      state: uuidv4(),
+      state,
     });
 
     return `https://appcenter.intuit.com/connect/oauth2?${params.toString()}`;
   }
 
-  getXeroAuthUrl(): string {
+  getXeroAuthUrl(state: string = uuidv4()): string {
     const scopes = [
       "accounting.transactions",
       "accounting.reports.read",
       "accounting.settings",
+      "offline_access",
     ].join(" ");
 
     const params = new URLSearchParams({
@@ -114,7 +118,7 @@ export class AccountingService {
       redirect_uri: this.xeroRedirectUri,
       response_type: "code",
       scope: scopes,
-      state: uuidv4(),
+      state,
     });
 
     return `https://login.xero.com/identity/connect/authorize?${params.toString()}`;
@@ -143,8 +147,11 @@ export class AccountingService {
       };
 
       await this.saveConnection(connection);
+      await this.scheduleTokenRefresh(connection);
+
       return connection;
     } catch (error) {
+      logger.error(`QuickBooks OAuth callback failed: ${error}`);
       throw new Error(`QuickBooks OAuth failed: ${error}`);
     }
   }
@@ -174,10 +181,31 @@ export class AccountingService {
       };
 
       await this.saveConnection(connection);
+      await this.scheduleTokenRefresh(connection);
+
       return connection;
     } catch (error) {
+      logger.error(`Xero OAuth callback failed: ${error}`);
       throw new Error(`Xero OAuth failed: ${error}`);
     }
+  }
+
+  private async scheduleTokenRefresh(connection: AccountingConnection): Promise<void> {
+    // Refresh 10 minutes before expiry
+    const refreshBufferMs = 10 * 60 * 1000;
+    const delayMs = connection.expiresAt.getTime() - Date.now() - refreshBufferMs;
+    
+    // If token is already expired or expires very soon, refresh immediately (small delay for safety)
+    const finalDelayMs = Math.max(5000, delayMs);
+    
+    await removeAccountingTokenRefreshJob(connection.id);
+    await addAccountingTokenRefreshJob(
+      connection.id,
+      connection.provider,
+      finalDelayMs
+    );
+    
+    logger.info(`Scheduled token refresh for connection ${connection.id} in ${finalDelayMs}ms`);
   }
 
   // Exchange authorization code for tokens
@@ -259,12 +287,24 @@ export class AccountingService {
         }
       );
 
-      await this.updateConnectionTokens(connectionId, {
+      const updatedConnection: AccountingConnection = {
+        ...connection,
         accessToken: response.data.access_token,
         refreshToken: response.data.refresh_token,
         expiresAt: new Date(Date.now() + response.data.expires_in * 1000),
+        updatedAt: new Date(),
+      };
+
+      await this.updateConnectionTokens(connectionId, {
+        accessToken: updatedConnection.accessToken,
+        refreshToken: updatedConnection.refreshToken,
+        expiresAt: updatedConnection.expiresAt,
       });
+
+      await this.scheduleTokenRefresh(updatedConnection);
+      logger.info(`Successfully refreshed QuickBooks token for connection ${connectionId}`);
     } catch (error) {
+      logger.error(`QuickBooks token refresh failed for ${connectionId}: ${error}`);
       throw new Error(`QuickBooks token refresh failed: ${error}`);
     }
   }
@@ -292,12 +332,24 @@ export class AccountingService {
         }
       );
 
-      await this.updateConnectionTokens(connectionId, {
+      const updatedConnection: AccountingConnection = {
+        ...connection,
         accessToken: response.data.access_token,
         refreshToken: response.data.refresh_token,
         expiresAt: new Date(Date.now() + response.data.expires_in * 1000),
+        updatedAt: new Date(),
+      };
+
+      await this.updateConnectionTokens(connectionId, {
+        accessToken: updatedConnection.accessToken,
+        refreshToken: updatedConnection.refreshToken,
+        expiresAt: updatedConnection.expiresAt,
       });
+
+      await this.scheduleTokenRefresh(updatedConnection);
+      logger.info(`Successfully refreshed Xero token for connection ${connectionId}`);
     } catch (error) {
+      logger.error(`Xero token refresh failed for ${connectionId}: ${error}`);
       throw new Error(`Xero token refresh failed: ${error}`);
     }
   }
@@ -479,6 +531,9 @@ export class AccountingService {
 
   // Database operations
   private async saveConnection(connection: AccountingConnection): Promise<void> {
+    const encryptedAccessToken = encryptField(connection.accessToken);
+    const encryptedRefreshToken = encryptField(connection.refreshToken);
+
     await pool.query(
       `INSERT INTO accounting_connections 
        (id, user_id, provider, realm_id, tenant_id, access_token, refresh_token, expires_at, is_active, created_at, updated_at)
@@ -495,8 +550,8 @@ export class AccountingService {
         connection.provider,
         connection.realmId,
         connection.tenantId,
-        connection.accessToken,
-        connection.refreshToken,
+        encryptedAccessToken,
+        encryptedRefreshToken,
         connection.expiresAt,
         connection.isActive,
         connection.createdAt,
@@ -509,9 +564,12 @@ export class AccountingService {
     connectionId: string,
     tokens: { accessToken: string; refreshToken: string; expiresAt: Date }
   ): Promise<void> {
+    const encryptedAccessToken = encryptField(tokens.accessToken);
+    const encryptedRefreshToken = encryptField(tokens.refreshToken);
+
     await pool.query(
       "UPDATE accounting_connections SET access_token = $1, refresh_token = $2, expires_at = $3, updated_at = $4 WHERE id = $5",
-      [tokens.accessToken, tokens.refreshToken, tokens.expiresAt, new Date(), connectionId]
+      [encryptedAccessToken, encryptedRefreshToken, tokens.expiresAt, new Date(), connectionId]
     );
   }
 
@@ -525,7 +583,16 @@ export class AccountingService {
       return null;
     }
 
-    return result.rows[0];
+    const row = result.rows[0];
+    return {
+      ...row,
+      accessToken: decryptField(row.access_token) || row.access_token,
+      refreshToken: decryptField(row.refresh_token) || row.refresh_token,
+      expiresAt: new Date(row.expires_at),
+      isActive: row.is_active,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    };
   }
 
   async getUserConnections(userId: string): Promise<AccountingConnection[]> {
@@ -534,7 +601,15 @@ export class AccountingService {
       [userId]
     );
 
-    return result.rows;
+    return result.rows.map(row => ({
+      ...row,
+      accessToken: decryptField(row.access_token) || row.access_token,
+      refreshToken: decryptField(row.refresh_token) || row.refresh_token,
+      expiresAt: new Date(row.expires_at),
+      isActive: row.is_active,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    }));
   }
 
   private async createSyncLog(syncLog: SyncLog): Promise<void> {

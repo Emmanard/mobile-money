@@ -110,6 +110,30 @@ export const env = cleanEnv(process.env, {
     desc: "API key for third-party AML/sanction screening provider (e.g. Elliptic, Chainalysis)",
     example: "ell_live_xxxxxxxxxxxx",
   }),
+  QUICKBOOKS_CLIENT_ID: str({
+    default: "",
+    desc: "QuickBooks Online OAuth 2.0 Client ID",
+  }),
+  QUICKBOOKS_CLIENT_SECRET: str({
+    default: "",
+    desc: "QuickBooks Online OAuth 2.0 Client Secret",
+  }),
+  QUICKBOOKS_REDIRECT_URI: str({
+    default: "http://localhost:3000/api/accounting/quickbooks/callback",
+    desc: "QuickBooks Online OAuth 2.0 Redirect URI",
+  }),
+  XERO_CLIENT_ID: str({
+    default: "",
+    desc: "Xero OAuth 2.0 Client ID",
+  }),
+  XERO_CLIENT_SECRET: str({
+    default: "",
+    desc: "Xero OAuth 2.0 Client Secret",
+  }),
+  XERO_REDIRECT_URI: str({
+    default: "http://localhost:3000/api/accounting/xero/callback",
+    desc: "Xero OAuth 2.0 Redirect URI",
+  }),
 });
 
 // Re-export specific values for convenience
@@ -132,4 +156,10 @@ export const {
   INDEX_REINDEX_MIN_SIZE_MB,
   INDEX_REINDEX_MAX_SCAN_COUNT,
   INDEX_REINDEX_MAX_ACTIVE_CONNECTIONS,
+  QUICKBOOKS_CLIENT_ID,
+  QUICKBOOKS_CLIENT_SECRET,
+  QUICKBOOKS_REDIRECT_URI,
+  XERO_CLIENT_ID,
+  XERO_CLIENT_SECRET,
+  XERO_REDIRECT_URI,
 } = env;
