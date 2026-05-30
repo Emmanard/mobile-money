@@ -528,6 +528,13 @@ export class AccountingService {
     return result.rows[0];
   }
 
+  async getAllActiveConnections(): Promise<AccountingConnection[]> {
+    const result = await pool.query(
+      "SELECT * FROM accounting_connections WHERE is_active = true"
+    );
+    return result.rows;
+  }
+
   async getUserConnections(userId: string): Promise<AccountingConnection[]> {
     const result = await pool.query(
       "SELECT * FROM accounting_connections WHERE user_id = $1 AND is_active = true ORDER BY created_at DESC",
@@ -946,5 +953,13 @@ export class AccountingService {
         );
       }
     }
+  }
+
+  /**
+   * Ensure the access token for a connection is valid, refreshing if necessary
+   * @param connectionId The connection ID
+   */
+  async ensureConnectionTokenValid(connectionId: string): Promise<void> {
+    await this.ensureValidToken(connectionId);
   }
 }

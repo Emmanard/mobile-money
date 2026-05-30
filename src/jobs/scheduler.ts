@@ -17,6 +17,7 @@ import { runLiquidityRebalanceJob } from "./liquidityRebalanceJob";
 import { runCrossChainMonitorJob } from "./crossChainMonitorJob";
 import { runDailyProviderReconciliation } from "./providerReconciliationJob";
 import { runReconciliationJob } from "./reconciliationJob";
+import { runAccountingReconciliationJob } from "./accountingReconciliationJob";
 
 
 interface JobConfig {
@@ -97,6 +98,12 @@ const JOBS: JobConfig[] = [
     // Daily at 5:00 AM
     schedule: process.env.RECONCILIATION_CRON || "0 5 * * *",
     handler: runReconciliationJob,
+  },
+  {
+    name: "accounting-reconciliation",
+    // Daily at 5:30 AM
+    schedule: process.env.ACCOUNTING_RECONCILIATION_CRON || "30 5 * * *",
+    handler: runAccountingReconciliationJob,
   },
 ];
 
