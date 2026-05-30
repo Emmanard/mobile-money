@@ -21,7 +21,7 @@ const smsService = new SmsService();
 const webhookService = new WebhookService();
 const pushService = pushNotificationService;
 
-const BATCH_SIZE = 50;
+const BATCH_SIZE = 100;
 const BATCH_INTERVAL_MS = parseInt(process.env.BATCH_PAYOUT_INTERVAL_MS || "5000", 10);
 const SUPPORTED_PROVIDERS = ["mtn"];
 

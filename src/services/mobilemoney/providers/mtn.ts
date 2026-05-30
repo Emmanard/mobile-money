@@ -162,8 +162,10 @@ export class MTNProvider {
   }
 
   /**
-   * MTN B2B Batch Payout - Process up to 50 payouts in a single API call.
-   * This provides significant performance gains for high-volume payout operations.
+   * MTN B2B Batch Payout - Process up to 100 payouts in a single API call.
+   * Sends the batch then polls the MTN batch status endpoint until items
+   * reach a terminal state or a timeout is reached. Individual item
+   * failures are returned so callers can resolve them independently.
    */
   async sendBatchPayout(
     items: BatchPayoutItem[],
@@ -246,7 +248,10 @@ export class MTNProvider {
           };
         }
 
-        const status = String(responseItem.status ?? "").toUpperCase();
+        const status = String(matched.status ?? "").toUpperCase();
+        const providerReference = getProviderReference(matched);
+        const success = status === "SUCCESSFUL" || status === "SUCCESS";
+
         return {
           referenceId: item.referenceId,
           success: status === "SUCCESSFUL" || status === "SUCCESS",
