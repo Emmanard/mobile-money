@@ -100,7 +100,7 @@ export async function generateRefreshToken(userId: string, familyId?: string, pa
 export function verifyToken(token: string): JWTPayload {
   const secret = getJwtSecret();
   try {
-    const decoded = jwt.verify(token, secret) as JWTPayload;
+    const decoded = jwt.verify(token, secret, { clockTolerance: 60 }) as JWTPayload;
     return decoded;
   } catch (error: unknown) {
     if (error instanceof jwt.TokenExpiredError) {
