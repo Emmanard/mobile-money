@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   phone_number VARCHAR(20) NOT NULL,
   provider VARCHAR(20) NOT NULL,
   stellar_address VARCHAR(56) NOT NULL,
-  status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'completed', 'failed', 'cancelled', 'clawed_back')),
+  status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'completed', 'failed', 'cancelled', 'review', 'dispute', 'reversed', 'clawed_back')),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id, user_id),

@@ -275,7 +275,7 @@ SELECT
 
     -- SLA breach flag
     CASE
-        WHEN d.status NOT IN ('resolved', 'rejected')
+        WHEN d.status NOT IN ('resolved', 'rejected', 'reversed', 'upheld')
          AND d.sla_due_date < NOW()
         THEN TRUE
         ELSE FALSE
@@ -286,7 +286,7 @@ SELECT
     d.updated_at                                           AS last_updated_at,
     EXTRACT(DAY FROM NOW() - d.created_at)::INTEGER        AS age_days,
     CASE
-        WHEN d.status IN ('resolved', 'rejected')
+        WHEN d.status IN ('resolved', 'rejected', 'reversed', 'upheld')
         THEN EXTRACT(EPOCH FROM (d.updated_at - d.created_at)) / 3600.0
     END                                                    AS resolution_hours,
 
