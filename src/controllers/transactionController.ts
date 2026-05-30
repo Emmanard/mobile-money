@@ -29,6 +29,7 @@ import {
 import { checkDestinationTrustline, TrustlineError } from "../stellar/trustlines";
 import { getConfiguredPaymentAsset } from "../services/stellar/assetService";
 import { ERROR_CODES } from "../constants/errorCodes";
+import { travelRuleService } from "../compliance/travelRule";
 
 const IDEMPOTENCY_TTL_HOURS = Number(
   process.env.IDEMPOTENCY_KEY_TTL_HOURS || 24,
