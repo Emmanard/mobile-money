@@ -220,11 +220,33 @@ export class MTNProvider {
         "X-Target-Environment": this.environment,
       };
 
-      // Poll for status if items are missing or in pending state
-      const needsPolling = responseItems.length === 0 || responseItems.some((ri: any) => {
-        const s = String(ri.status ?? "").toUpperCase();
-        return s === "PENDING" || s === "IN_PROGRESS" || s === "PROCESSING";
+      const terminalStatuses = new Set([
+        "SUCCESSFUL",
+        "SUCCESS",
+        "FAILED",
+        "ERROR",
+        "REJECTED",
+        "CANCELLED",
+      ]);
+      const pendingStatuses = new Set([
+        "PENDING",
+        "IN_PROGRESS",
+        "PROCESSING",
+        "SUBMITTED",
+        "QUEUED",
+      ]);
+
+      const responseHasReferenceIds = responseItems.some((ri: any) => {
+        return ri?.referenceId !== undefined && ri?.referenceId !== null;
       });
+
+      // Poll for status if items are missing or any item appears not-terminal
+      const needsPolling =
+        responseItems.length === 0 ||
+        responseItems.some((ri: any) => {
+          const s = String(ri.status ?? "").toUpperCase();
+          return pendingStatuses.has(s) || !terminalStatuses.has(s);
+        });
 
       if (needsPolling) {
         const pollUrls = [
@@ -233,49 +255,86 @@ export class MTNProvider {
           `${this.baseUrl}/disbursement/v2_0/batch-payouts/${encodeURIComponent(providedBatchId)}`,
         ];
 
-        const maxAttempts = 10;
-        const delayMs = 1000;
+        const maxAttempts = Number.parseInt(
+          process.env.MTN_BATCH_PAYOUT_MAX_ATTEMPTS || "10",
+          10,
+          
+        );
+        const delayMs = Number.parseInt(
+          process.env.MTN_BATCH_PAYOUT_POLL_DELAY_MS || "1000",
+          10,
+        );
 
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const safeMaxAttempts = Number.isFinite(maxAttempts) ? maxAttempts : 10;
+        const safeDelayMs = Number.isFinite(delayMs) ? delayMs : 1000;
+
+        for (let attempt = 0; attempt < safeMaxAttempts; attempt++) {
           try {
             let statusResp: any = null;
             for (const url of pollUrls) {
               try {
                 statusResp = await axios.get(url, { headers });
                 if (statusResp?.data) break;
-              } catch (e) {
+              } catch {
                 // try next candidate
               }
             }
 
             if (!statusResp?.data) {
-              await new Promise(r => setTimeout(r, delayMs));
+              await new Promise(r => setTimeout(r, safeDelayMs));
               continue;
             }
 
-            responseItems = statusResp.data.items ?? statusResp.data?.results ?? responseItems;
+            responseItems =
+              statusResp.data.items ??
+              statusResp.data?.results ??
+              responseItems;
 
-            const allFinal = responseItems.every((ri: any) => {
-              const s = String(ri.status ?? "").toUpperCase();
-              return s === "SUCCESSFUL" || s === "SUCCESS" || s === "FAILED" || s === "ERROR";
-            });
+            const allFinal = responseItems.length > 0 &&
+              responseItems.every((ri: any) => {
+                const s = String(ri.status ?? "").toUpperCase();
+                return terminalStatuses.has(s);
+              });
 
             if (allFinal) break;
-          } catch (pollErr) {
+          } catch {
             // swallow and retry
           }
 
-          await new Promise(r => setTimeout(r, delayMs));
+          await new Promise(r => setTimeout(r, safeDelayMs));
         }
       }
 
+      const getProviderReference = (ri: any): string | undefined => {
+        return (
+          ri?.financialTransactionId ||
+          ri?.providerReference ||
+          ri?.transactionId ||
+          ri?.transaction_id ||
+          ri?.transaction_id_response
+        );
+      };
+
       // Build results for caller
       const results: BatchPayoutResult[] = items.map(item => {
-        const responseItem = responseItems.find(
-          (r: { referenceId: string }) => String(r.referenceId) === String(item.referenceId)
-        );
+        // Prefer matching on echoed referenceId, but fall back to phone+amount if absent.
+        const responseItem = responseHasReferenceIds
+          ? responseItems.find(
+              (r: any) => r?.referenceId !== undefined && String(r.referenceId) === String(item.referenceId),
+            )
+          : undefined;
 
-        if (!responseItem) {
+        const fallbackItem = !responseItem
+          ? responseItems.find((ri: any) => {
+              const phone = String(ri?.phoneNumber ?? ri?.payee?.partyId ?? "");
+              const amt = String(ri?.amount ?? "");
+              return phone === String(item.phoneNumber) && amt === String(item.amount);
+            })
+          : undefined;
+
+        const matched = responseItem ?? fallbackItem;
+
+        if (!matched) {
           return {
             referenceId: item.referenceId,
             success: false,
@@ -283,16 +342,20 @@ export class MTNProvider {
           };
         }
 
-        const status = String(responseItem.status ?? "").toUpperCase();
+        const status = String(matched.status ?? "").toUpperCase();
+        const providerReference = getProviderReference(matched);
+        const success = status === "SUCCESSFUL" || status === "SUCCESS";
+
         return {
           referenceId: item.referenceId,
-          success: status === "SUCCESSFUL" || status === "SUCCESS",
-          error: status !== "SUCCESSFUL" && status !== "SUCCESS"
-            ? responseItem.errorReason || responseItem.message || `Status: ${status}`
-            : undefined,
-          providerReference: responseItem.financialTransactionId || responseItem.transactionId || responseItem.transaction_id,
+          success,
+          error: success
+            ? undefined
+            : matched.errorReason || matched.message || `Status: ${status}`,
+          providerReference,
         };
       });
+
 
       const successCount = results.filter(r => r.success).length;
       const failureCount = results.filter(r => !r.success).length;
