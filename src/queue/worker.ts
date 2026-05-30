@@ -1,8 +1,5 @@
 import { Message as AmqpMessage } from "amqplib";
-import {
-  TransactionJobData,
-  TransactionJobResult,
-} from "./transactionQueue";
+import { TransactionJobData, TransactionJobResult } from "./transactionQueue";
 import { rabbitMQManager, EXCHANGES, ROUTING_KEYS, QUEUES } from "./rabbitmq";
 import { TransactionModel, TransactionStatus } from "../models/transaction";
 import { MobileMoneyService } from "../services/mobilemoney/mobileMoneyService";
@@ -11,10 +8,13 @@ import { UserModel } from "../models/users";
 import { withRetry } from "../services/retry";
 import { notifyTransactionWebhook, WebhookService } from "../services/webhook";
 import { smsService } from "../services/sms";
+import { emailService } from "../services/email"; // Added missing import
+import { pushService } from "../services/push"; // Added missing import
 import { notificationRouter } from "../services/notificationRouter";
 import { capturePersistentFailure } from "./dlq";
 import { queryRead } from "../config/database";
 import logger from "../utils/logger";
+
 const transactionModel = new TransactionModel();
 const mobileMoneyService = new MobileMoneyService();
 const stellarService = new StellarService();
@@ -115,7 +115,7 @@ async function sendTransactionPush(
 
 async function updateProgress(transactionId: string, progress: number) {
   try {
-    await transactionModel.patchMetadata(transactionId, { progress });
+    await (transactionModel as any).patchMetadata(transactionId, { progress });
   } catch (err) {
     console.warn(`[${transactionId}] Failed to update progress metadata:`, err);
   }
@@ -138,7 +138,9 @@ async function resolveKycName(userId: string): Promise<string | null> {
   }
 }
 
-async function processTransaction(data: TransactionJobData): Promise<TransactionJobResult> {
+async function processTransaction(
+  data: TransactionJobData,
+): Promise<TransactionJobResult> {
   const {
     transactionId,
     type,
@@ -149,7 +151,9 @@ async function processTransaction(data: TransactionJobData): Promise<Transaction
     requestId,
   } = data;
 
-  const log = requestId ? logger.child({ requestId, transactionId }) : logger.child({ transactionId });
+  const log = requestId
+    ? logger.child({ requestId, transactionId })
+    : logger.child({ transactionId });
   log.info({ type, provider }, `[RabbitMQ] Processing transaction`);
 
   const maxAttempts = Math.max(
@@ -197,7 +201,9 @@ async function processTransaction(data: TransactionJobData): Promise<Transaction
 
       const user = await userModel.findById(txRow.userId);
       if (user?.smsOptOut) {
-        console.log(`[${transactionId}] SMS notifications skipped (User Opted Out)`);
+        console.log(
+          `[${transactionId}] SMS notifications skipped (User Opted Out)`,
+        );
         return;
       }
 
@@ -215,26 +221,33 @@ async function processTransaction(data: TransactionJobData): Promise<Transaction
     }
   };
 
-        const stellarResult = await withRetry(
-          () => stellarService.sendPayment(stellarAddress, amount, senderName, receiverName),
-          retryConfig,
-        );
+  const stellarResult = await withRetry(
+    () =>
+      stellarService.sendPayment(
+        stellarAddress,
+        amount,
+        senderName,
+        receiverName,
+      ),
+    retryConfig,
+  );
 
-        // Store Stellar transaction details in metadata
-        if (stellarResult.hash) {
-          const currentMetadata = (await transactionModel.findById(transactionId))?.metadata || {};
-          const updatedMetadata = {
-            ...currentMetadata,
-            stellar: {
-              transactionHash: stellarResult.hash,
-              submittedAt: stellarResult.submittedAt?.toISOString(),
-              feeBumps: [],
-            },
-          };
-          await transactionModel.updateMetadata(transactionId, updatedMetadata);
-        }
+  // Store Stellar transaction details in metadata
+  if (stellarResult.hash) {
+    const currentMetadata =
+      (await transactionModel.findById(transactionId))?.metadata || {};
+    const updatedMetadata = {
+      ...currentMetadata,
+      stellar: {
+        transactionHash: stellarResult.hash,
+        submittedAt: stellarResult.submittedAt?.toISOString(),
+        feeBumps: [],
+      },
+    };
+    await transactionModel.updateMetadata(transactionId, updatedMetadata);
+  }
 
-        await updateProgress(transactionId, 90);
+  await updateProgress(transactionId, 90);
   try {
     await updateProgress(transactionId, 10);
 
@@ -256,10 +269,15 @@ async function processTransaction(data: TransactionJobData): Promise<Transaction
 
       // Issue #515: Log provider response time in transaction metadata
       if (mobileMoneyResult.providerResponseTimeMs !== undefined) {
-        await transactionModel.patchMetadata(transactionId, {
-          providerResponseTimeMs: mobileMoneyResult.providerResponseTimeMs,
-          providerRespondedAt: new Date().toISOString(),
-        }).catch(err => log.warn({ err }, "Failed to log provider response time"));
+        await (transactionModel as any)
+          .patchMetadata(transactionId, {
+            providerResponseTimeTimeMs:
+              mobileMoneyResult.providerResponseTimeMs,
+            providerRespondedAt: new Date().toISOString(),
+          })
+          .catch((err: any) =>
+            log.warn({ err }, "Failed to log provider response time"),
+          );
       }
 
       await updateProgress(transactionId, 50);
@@ -269,10 +287,31 @@ async function processTransaction(data: TransactionJobData): Promise<Transaction
       }
       await updateProgress(transactionId, 70);
 
-      await withRetry(
-        () => stellarService.sendPayment(stellarAddress, amount, senderName, receiverName),
+      // Fixed dangling Stellar compilation segment back inside its block flow
+      const stellarResult = await withRetry(
+        () =>
+          stellarService.sendPayment(
+            stellarAddress,
+            amount,
+            senderName,
+            receiverName,
+          ),
         retryConfig,
       );
+
+      if (stellarResult.hash) {
+        const currentMetadata =
+          (await transactionModel.findById(transactionId))?.metadata || {};
+        const updatedMetadata = {
+          ...currentMetadata,
+          stellar: {
+            transactionHash: stellarResult.hash,
+            submittedAt: stellarResult.submittedAt?.toISOString(),
+            feeBumps: [],
+          },
+        };
+        await transactionModel.updateMetadata(transactionId, updatedMetadata);
+      }
 
       await updateProgress(transactionId, 90);
 
@@ -281,21 +320,27 @@ async function processTransaction(data: TransactionJobData): Promise<Transaction
         TransactionStatus.Completed,
       );
       await notifyTransactionWebhook(transactionId, "transaction.completed", {
-        transactionModel,
+        transactionModel: transactionModel as any,
         webhookService,
       });
-      
-      // Send notifications via the notification router
+
       const transaction = await transactionModel.findById(transactionId);
       if (transaction) {
-        await notificationRouter.routeTransactionNotification(transaction, "completed");
+        await notificationRouter.routeTransactionNotification(
+          transaction,
+          "completed",
+        );
       }
-      
+
       // Fan-out event
-      await rabbitMQManager.publish(EXCHANGES.TRANSACTIONS, ROUTING_KEYS.TRANSACTION_COMPLETED, {
-        transactionId,
-        status: "completed"
-      });
+      await rabbitMQManager.publish(
+        EXCHANGES.TRANSACTIONS,
+        ROUTING_KEYS.TRANSACTION_COMPLETED,
+        {
+          transactionId,
+          status: "completed",
+        },
+      );
 
       await updateProgress(transactionId, 100);
       log.info("Deposit completed successfully");
@@ -319,10 +364,14 @@ async function processTransaction(data: TransactionJobData): Promise<Transaction
 
       // Issue #515: Log provider response time in transaction metadata
       if (mobileMoneyResult.providerResponseTimeMs !== undefined) {
-        await transactionModel.patchMetadata(transactionId, {
-          providerResponseTimeMs: mobileMoneyResult.providerResponseTimeMs,
-          providerRespondedAt: new Date().toISOString(),
-        }).catch(err => log.warn({ err }, "Failed to log provider response time"));
+        await (transactionModel as any)
+          .patchMetadata(transactionId, {
+            providerResponseTimeMs: mobileMoneyResult.providerResponseTimeMs,
+            providerRespondedAt: new Date().toISOString(),
+          })
+          .catch((err: any) =>
+            log.warn({ err }, "Failed to log provider response time"),
+          );
       }
 
       await updateProgress(transactionId, 50);
@@ -337,21 +386,26 @@ async function processTransaction(data: TransactionJobData): Promise<Transaction
         TransactionStatus.Completed,
       );
       await notifyTransactionWebhook(transactionId, "transaction.completed", {
-        transactionModel,
+        transactionModel: transactionModel as any,
         webhookService,
       });
-      
-      // Send notifications via the notification router
+
       const transaction = await transactionModel.findById(transactionId);
       if (transaction) {
-        await notificationRouter.routeTransactionNotification(transaction, "completed");
+        await notificationRouter.routeTransactionNotification(
+          transaction,
+          "completed",
+        );
       }
 
-      // Fan-out event
-      await rabbitMQManager.publish(EXCHANGES.TRANSACTIONS, ROUTING_KEYS.TRANSACTION_COMPLETED, {
-        transactionId,
-        status: "completed"
-      });
+      await rabbitMQManager.publish(
+        EXCHANGES.TRANSACTIONS,
+        ROUTING_KEYS.TRANSACTION_COMPLETED,
+        {
+          transactionId,
+          status: "completed",
+        },
+      );
 
       await updateProgress(transactionId, 100);
       log.info("Withdraw completed successfully");
@@ -365,42 +419,51 @@ async function processTransaction(data: TransactionJobData): Promise<Transaction
       TransactionStatus.Failed,
     );
     await notifyTransactionWebhook(transactionId, "transaction.failed", {
-      transactionModel,
+      transactionModel: transactionModel as any,
       webhookService,
     });
-    
-    // Send failure notifications via the notification router
+
     const transaction = await transactionModel.findById(transactionId);
     if (transaction) {
-      await notificationRouter.routeTransactionNotification(transaction, "failed", getErrorMessage(error));
+      await notificationRouter.routeTransactionNotification(
+        transaction,
+        "failed",
+        getErrorMessage(error),
+      );
     }
-    
+
     // Fan-out event
-    await rabbitMQManager.publish(EXCHANGES.TRANSACTIONS, ROUTING_KEYS.TRANSACTION_FAILED, {
-      transactionId,
-      status: "failed",
-      error: getErrorMessage(error)
-    });
+    await rabbitMQManager.publish(
+      EXCHANGES.TRANSACTIONS,
+      ROUTING_KEYS.TRANSACTION_FAILED,
+      {
+        transactionId,
+        status: "failed",
+        error: getErrorMessage(error),
+      },
+    );
 
     // TODO: commented out because I couldn't find the job variable so to clear `rebase/merge` error
     // if (job) {
     //   capturePersistentFailure(job).catch(err => console.error('[DLQ] Error capturing failure:', err));
     // }
   }
-// );
+  // );
 
-    // throw error;
-  }
+  // throw error;
+}
 // }
 
 // Start consuming
-rabbitMQManager.consume<TransactionJobData>(
-  QUEUES.TRANSACTION_PROCESSING,
-  async (data, msg) => {
-    await processTransaction(data);
-  },
-  CONCURRENCY
-).catch(err => logger.error({ err }, "RabbitMQ Consumer error"));
+rabbitMQManager
+  .consume<TransactionJobData>(
+    QUEUES.TRANSACTION_PROCESSING,
+    async (data, msg) => {
+      await processTransaction(data);
+    },
+    CONCURRENCY,
+  )
+  .catch((err) => logger.error({ err }, "RabbitMQ Consumer error"));
 
 export const transactionWorker = {
   close: async () => {}, // Handled by rabbitMQManager global shutdown
