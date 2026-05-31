@@ -2,7 +2,7 @@ import { pool } from "../config/database";
 import { redisClient } from "../config/redis";
 import axios from "axios";
 import { v4 as uuidv4 } from "uuid";
-import { encryptField, decryptField } from "../utils/encryption";
+import { encryptField, decryptField, decrypt } from "../utils/encryption";
 import {
   addAccountingTokenRefreshJob,
   removeAccountingTokenRefreshJob,
@@ -784,6 +784,116 @@ export class AccountingService {
     );
 
     return result.rows;
+  }
+
+  /**
+   * Ensure a Xero/QuickBooks contact exists for the given user and create a mapping.
+   * For Xero we attempt to find a contact by email and reuse it; otherwise create a new contact.
+   */
+  async syncContactForUser(userId: string): Promise<void> {
+    try {
+      // Load user data
+      const userRes = await pool.query("SELECT id, first_name, last_name, email FROM users WHERE id = $1", [userId]);
+      if (userRes.rows.length === 0) return;
+      const row = userRes.rows[0];
+      const email = decrypt(row.email) as string | null | undefined;
+      const firstName = decryptField(row.first_name) as string | null | undefined;
+      const lastName = decryptField(row.last_name) as string | null | undefined;
+
+      if (!email) {
+        logger.info(`[AccountingService] Skipping contact sync for user ${userId}: no email`);
+        return;
+      }
+
+      const connections = await this.getUserConnections(userId);
+
+      for (const connection of connections) {
+        if (connection.provider !== AccountingProvider.XERO) continue;
+
+        // Skip if mapping already exists for this tenant
+        const mapRes = await pool.query(
+          "SELECT external_id FROM accounting_contact_mappings WHERE user_id = $1 AND provider_type = 'xero' AND tenant_id = $2",
+          [userId, connection.tenantId],
+        );
+        if (mapRes.rows.length > 0) continue;
+
+        try {
+          await this.ensureValidToken(connection.id);
+
+          // Fetch all contacts and try to match by email (API may support filtering; keep generic)
+          const resp = await axios.get("https://api.xero.com/api.xro/2.0/Contacts", {
+            headers: {
+              Authorization: `Bearer ${connection.accessToken}`,
+              "Xero-tenant-id": connection.tenantId || "",
+            },
+            timeout: 20000,
+          });
+
+          const contacts = resp.data?.Contacts || [];
+
+          let foundContact: any = null;
+
+          for (const c of contacts) {
+            // Xero contact email can be in EmailAddress or EmailAddresses array
+            const emails: string[] = [];
+            if (c.EmailAddress) emails.push(c.EmailAddress);
+            if (c.EmailAddresses && Array.isArray(c.EmailAddresses)) {
+              for (const e of c.EmailAddresses) {
+                if (e && (e.EmailAddress || e.email)) emails.push(e.EmailAddress || e.email);
+              }
+            }
+            if (emails.find((e) => e && e.toLowerCase() === email.toLowerCase())) {
+              foundContact = c;
+              break;
+            }
+          }
+
+          let externalId: string | undefined;
+
+          if (foundContact) {
+            externalId = foundContact.ContactID || foundContact.ContactId || foundContact.contactID;
+          } else {
+            // Create new contact in Xero
+            const name = (firstName || lastName) ? `${firstName || ''} ${lastName || ''}`.trim() : email;
+            const createBody = {
+              Contacts: [
+                {
+                  Name: name,
+                  FirstName: firstName,
+                  LastName: lastName,
+                  EmailAddress: email,
+                },
+              ],
+            };
+
+            const createResp = await axios.post("https://api.xero.com/api.xro/2.0/Contacts", createBody, {
+              headers: {
+                Authorization: `Bearer ${connection.accessToken}`,
+                "Xero-tenant-id": connection.tenantId || "",
+                "Content-Type": "application/json",
+              },
+              timeout: 20000,
+            });
+
+            const created = createResp.data?.Contacts && createResp.data.Contacts[0];
+            externalId = created?.ContactID || created?.ContactId;
+          }
+
+          if (externalId) {
+            await pool.query(
+              `INSERT INTO accounting_contact_mappings (id, user_id, provider_type, tenant_id, external_id, external_email)
+               VALUES (gen_random_uuid(), $1, 'xero', $2, $3, $4)`,
+              [userId, connection.tenantId, externalId, email],
+            );
+            logger.info(`[AccountingService] Mapped user ${userId} -> xero contact ${externalId} (tenant ${connection.tenantId})`);
+          }
+        } catch (err) {
+          logger.error(`[AccountingService] Failed to sync contact for user ${userId} on connection ${connection.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } catch (err) {
+      logger.error(`[AccountingService] syncContactForUser error for ${userId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // Helper functions
