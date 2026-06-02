@@ -390,3 +390,90 @@ export async function getPgBouncerStats(): Promise<{
     };
   }
 }
+
+/**
+ * Context-aware query function that respects HTTP method-based routing decisions.
+ * 
+ * This function is designed to work with the readReplicaRoutingMiddleware.
+ * It routes queries based on:
+ * 1. HTTP method context (if provided) - GET requests go to replica
+ * 2. SQL query type (fallback) - SELECT queries go to replica
+ * 
+ * Usage in route handlers:
+ *   const result = await queryWithContext(req, "SELECT * FROM users", []);
+ * 
+ * @param req - Express Request object (with dbRouting context from middleware)
+ * @param text - SQL query string
+ * @param params - Query parameters
+ * @returns Query result
+ */
+export async function queryWithContext<
+  T extends import("pg").QueryResultRow = any,
+>(
+  req: any,
+  text: string,
+  params?: unknown[],
+): Promise<import("pg").QueryResult<T>> {
+  // Check for HTTP method-based routing context
+  if (req?.dbRouting?.useReplicaPool) {
+    return queryRead<T>(text, params);
+  }
+
+  // Fall back to SQL query-based routing
+  return querySmart<T>(text, params);
+}
+
+/**
+ * Batch query execution with request context.
+ * Executes multiple queries with proper pool routing based on HTTP method.
+ * 
+ * All read operations (GET) use replica, all writes use primary.
+ * 
+ * @param req - Express Request object
+ * @param queries - Array of { text, params } query configurations
+ * @returns Array of query results
+ */
+export async function queryBatchWithContext<
+  T extends import("pg").QueryResultRow = any,
+>(
+  req: any,
+  queries: Array<{ text: string; params?: unknown[] }>,
+): Promise<import("pg").QueryResult<T>[]> {
+  const results: import("pg").QueryResult<T>[] = [];
+
+  for (const query of queries) {
+    const result = await queryWithContext<T>(req, query.text, query.params);
+    results.push(result);
+  }
+
+  return results;
+}
+
+/**
+ * Get database pool statistics combining primary and replica metrics.
+ * Useful for monitoring and health check endpoints.
+ */
+export async function getPoolStats(): Promise<{
+  primary: {
+    mode: "normal" | "failover";
+    url: string;
+    description: string;
+  };
+  replicas: Array<{
+    url: string;
+    healthy: boolean;
+  }>;
+}> {
+  const replicaStats = await checkReplicaHealth();
+
+  return {
+    primary: {
+      mode: isDRMode() ? "failover" : "normal",
+      url: DR_DATABASE_URL || process.env.DATABASE_URL || "",
+      description: isDRMode()
+        ? "Running in DR failover mode - writes redirected to promoted replica"
+        : "Primary database - all critical writes",
+    },
+    replicas: replicaStats,
+  };
+}

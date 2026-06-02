@@ -66,6 +66,7 @@ import {
 import { requireAuth } from "./middleware/auth";
 import { responseTime } from "./middleware/responseTime";
 import { requestId } from "./middleware/requestId";
+import { readReplicaRoutingMiddleware } from "./middleware/readReplicaRouting";
 import { i18nMiddleware } from "./utils/i18n";
 import { metricsMiddleware } from "./middleware/metrics";
 import { validateStellarNetwork, logStellarNetwork } from "./config/stellar";
@@ -84,6 +85,8 @@ import tomlRouter from "./routes/toml";
 import feesRouter from "./routes/fees";
 import feeStrategiesRouter from "./routes/feeStrategies";
 import crossChainRouter from "./routes/crossChain";
+import { merchantRoutes } from "./routes/merchants";
+import { default as providerStatusRouter } from "./routes/providerStatus";
 
 // 1. Import Sentry Middleware
 import { initSentry, sentryBreadcrumbMiddleware } from "./middleware/sentry";
@@ -164,6 +167,7 @@ app.use(
 // app.use(rateLimitMiddleware);
 app.use(responseTime);
 app.use(requestId);
+app.use(readReplicaRoutingMiddleware);
 app.use(i18nMiddleware);
 
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -372,6 +376,7 @@ app.use("/api/kyc", createKYCRoutes(pool));
 app.use("/api/fees", feesRouter);
 app.use("/api/fee-strategies", feeStrategiesRouter);
 app.use("/api/cross-chain", crossChainRouter);
+app.use("/api/merchants", merchantRoutes);
 
 // GDPR
 app.use("/api/gdpr", privacyRoutes);
