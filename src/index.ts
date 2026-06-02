@@ -177,6 +177,7 @@ app.use(
 // app.use(rateLimitMiddleware);
 app.use(responseTime);
 app.use(requestId);
+app.use(readReplicaRoutingMiddleware);
 app.use(i18nMiddleware);
 app.use(dbConnectionLeakDetector);
 
