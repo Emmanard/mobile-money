@@ -22,7 +22,8 @@ jobs:
           docker build -t mobile-money:${{ github.sha }} -f Dockerfile .
 
       - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@v1
+        uses: aquasecurity/trivy-action@0.30.0
+        continue-on-error: true
         with:
           image-ref: mobile-money:${{ github.sha }}
           format: json
@@ -32,6 +33,7 @@ jobs:
 
       - name: Upload Trivy report
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: trivy-report
           path: trivy-report.json

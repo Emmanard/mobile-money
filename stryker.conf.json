@@ -8,9 +8,6 @@
   },
   "checkers": ["typescript"],
   "disableTypeChecks": false,
-  "typescriptChecker": {
-    "prioritizePerformanceImpactOver": "accuracy"
-  },
   "mutate": [
     "src/services/retry.ts",
     "src/services/fraud.ts"
