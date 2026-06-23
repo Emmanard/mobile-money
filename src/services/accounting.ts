@@ -1615,6 +1615,25 @@ export class AccountingService {
             err instanceof Error ? err.message : String(err),
           ],
         );
+
+        const providerType =
+          connection.provider === AccountingProvider.QUICKBOOKS
+            ? 'quickbooks'
+            : connection.provider === AccountingProvider.XERO
+              ? 'xero'
+              : null;
+
+        if (providerType) {
+          const errorMessage =
+            err instanceof Error ? err.message : String(err);
+          await pool.query(
+            `INSERT INTO accounting_sync_errors
+               (transaction_id, provider_type, error_message, status)
+             VALUES ($1, $2, $3, 'pending')
+             ON CONFLICT DO NOTHING`,
+            [transaction.id, providerType, errorMessage.slice(0, 500)],
+          );
+        }
       }
     }
   }
