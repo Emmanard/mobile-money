@@ -89,6 +89,7 @@ import { paymentLinkRoutes } from "./routes/paymentLinkRoutes.js";
 import providerStatusRouter from "./routes/providerStatus";
 import { startHeartbeatService, stopHeartbeatService } from "./services/heartbeatService";
 import { startStellarExporter } from "./services/stellarExporter";
+import { StellarService } from "./services/stellar/stellarService";
 
 // Sentry Middleware
 import { initSentry, sentryBreadcrumbMiddleware } from "./middleware/sentry";
@@ -542,6 +543,16 @@ async function initializeRuntime(): Promise<void> {
 
   // Initialize Prometheus Horizon Scraper
   startStellarExporter();
+
+  // Verify Horizon reachability before starting runtime workers
+  try {
+    const stellarService = new StellarService();
+    await stellarService.pingHorizon();
+    console.log("Horizon server reachable");
+  } catch (err) {
+    console.error("Horizon unreachable during startup. Halting startup.", err);
+    process.exit(1);
+  }
 
   // Initialize System Heartbeat Metric
   startHeartbeatService();

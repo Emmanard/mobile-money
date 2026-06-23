@@ -74,6 +74,29 @@ export class StellarService {
   }
 
   /**
+   * Ping the configured Horizon server to verify reachability.
+   * Throws if the server cannot be reached within the timeout.
+   */
+  async pingHorizon(timeoutMs: number = 5000): Promise<void> {
+    if (this.isMockMode) {
+      console.log("Mock mode: skipping Horizon ping");
+      return;
+    }
+
+    try {
+      const callPromise = this.server.root().call();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Horizon ping timeout")), timeoutMs),
+      );
+
+      await Promise.race([callPromise, timeoutPromise]);
+    } catch (err) {
+      console.error("Horizon server unreachable:", err instanceof Error ? err.message : err);
+      throw err;
+    }
+  }
+
+  /**
    * Submits a transaction wrapped in a FeeBumpTransaction.
    * This allows the fee payer account to cover network fees for the transaction.
    *
