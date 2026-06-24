@@ -17,6 +17,7 @@ import { runProviderHealthCheckJob } from "./providerHealthCheck";
 import { runKycTierUpgradeJob } from "./kycTierUpgradeJob";
 import { runLiquidityRebalanceJob } from "./liquidityRebalanceJob";
 import { runCrossChainMonitorJob } from "./crossChainMonitorJob";
+import { runDailySettlementJob } from "./dailySettlementJob";
 import { runDailyProviderReconciliation } from "./providerReconciliationJob";
 import { runReconciliationJob } from "./reconciliationJob";
 import { runDatabaseBackupJob } from "./databaseBackupJob";
@@ -103,6 +104,10 @@ const JOBS: JobConfig[] = [
     handler: runProviderHealthCheckJob,
   },
   {
+    name: "daily-settlement",
+    // Daily at 01:00 AM UTC — sweeps merchant fees and settles provider balances
+    schedule: process.env.DAILY_SETTLEMENT_CRON || "0 1 * * *",
+    handler: runDailySettlementJob,
     name: "provider-reconciliation",
     // Daily at 4:00 AM - runs automated reconciliation against provider CSV reports
     schedule: process.env.PROVIDER_RECONCILIATION_CRON || "0 4 * * *",
