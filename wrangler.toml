@@ -20,3 +20,6 @@ name = "well-known-cache-dev"
 routes = [
   { pattern = "*localhost:.well-known/*" }
 ]
+# Disaster Recovery (DR) Failover Configuration
+DR_FAILOVER_URL = ""
+DR_FAILOVER_MODE = "PROXY"
