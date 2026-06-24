@@ -2,27 +2,17 @@ import { MobileMoneyProvider, ProviderTransactionStatus } from "../mobileMoneySe
 import crypto from "crypto";
 import logger from "../../../utils/logger";
 import { maskPII } from "../../../utils/masking";
-import axios, { AxiosInstance } from "axios";
+import axios from "axios";
 
 export class MoovProvider implements MobileMoneyProvider {
   private privateKey: string;
   private publicKey: string;
   private baseUrl: string;
-  private client: AxiosInstance;
 
   constructor() {
     this.privateKey = process.env.MOOV_PRIVATE_KEY || "";
     this.publicKey = process.env.MOOV_PUBLIC_KEY || "";
     this.baseUrl = process.env.MOOV_BASE_URL || "https://api.moov.com/soap";
-
-    this.client = axios.create({
-      baseURL: this.baseUrl,
-      timeout: 10000,
-      headers: {
-        "Content-Type": "text/xml; charset=utf-8",
-        "Accept": "text/xml",
-      },
-    });
   }
 
   // sign the XML payload using RSA-SHA256
@@ -60,15 +50,12 @@ export class MoovProvider implements MobileMoneyProvider {
 </soap:Envelope>`;
   }
 
-  private cleanXmlForVerification(xml: string): { signature: string; cleanXml: string } {
-    const signatureMatch = xml.match(/<Signature[^>]*>([^<]+)<\/Signature>/);
-    if (!signatureMatch) {
-      throw new Error("Moov Provider: SOAP response is missing Signature header");
+  private getSoapBodyContent(xml: string): string {
+    const match = xml.match(/<soap:Body[^>]*>([\s\S]*?)<\/soap:Body>/);
+    if (!match) {
+      throw new Error("Moov Provider: SOAP response is missing Body element");
     }
-    const signature = signatureMatch[1].trim();
-    // Remove the Signature element to get the clean XML that was signed
-    const cleanXml = xml.replace(/<Signature[^>]*>[^<]*<\/Signature>/g, "");
-    return { signature, cleanXml };
+    return match[1].trim();
   }
 
   private getXmlElementValue(xml: string, tagName: string): string {
@@ -103,13 +90,23 @@ export class MoovProvider implements MobileMoneyProvider {
       const signature = this.signPayload(bodyContent);
       const requestXml = this.buildSoapEnvelope("RequestPayment", bodyContent, signature);
 
-      const response = await this.client.post("", requestXml, {
-        headers: { SOAPAction: "RequestPayment" },
+      const response = await axios.post(this.baseUrl, requestXml, {
+        headers: {
+          "Content-Type": "text/xml; charset=utf-8",
+          "Accept": "text/xml",
+          SOAPAction: "RequestPayment",
+        },
       });
 
       const responseXml = response.data;
-      const { signature: resSignature, cleanXml } = this.cleanXmlForVerification(responseXml);
-      if (!this.verifyResponse(cleanXml, resSignature)) {
+      const signatureMatch = responseXml.match(/<Signature[^>]*>([^<]+)<\/Signature>/);
+      if (!signatureMatch) {
+        throw new Error("Response signature verification failed: SOAP response is missing Signature header");
+      }
+      const resSignature = signatureMatch[1].trim();
+      const bodyXml = this.getSoapBodyContent(responseXml);
+      
+      if (!this.verifyResponse(bodyXml, resSignature)) {
         throw new Error("Response signature verification failed");
       }
 
@@ -162,13 +159,23 @@ export class MoovProvider implements MobileMoneyProvider {
       const signature = this.signPayload(bodyContent);
       const requestXml = this.buildSoapEnvelope("SendPayout", bodyContent, signature);
 
-      const response = await this.client.post("", requestXml, {
-        headers: { SOAPAction: "SendPayout" },
+      const response = await axios.post(this.baseUrl, requestXml, {
+        headers: {
+          "Content-Type": "text/xml; charset=utf-8",
+          "Accept": "text/xml",
+          SOAPAction: "SendPayout",
+        },
       });
 
       const responseXml = response.data;
-      const { signature: resSignature, cleanXml } = this.cleanXmlForVerification(responseXml);
-      if (!this.verifyResponse(cleanXml, resSignature)) {
+      const signatureMatch = responseXml.match(/<Signature[^>]*>([^<]+)<\/Signature>/);
+      if (!signatureMatch) {
+        throw new Error("Response signature verification failed: SOAP response is missing Signature header");
+      }
+      const resSignature = signatureMatch[1].trim();
+      const bodyXml = this.getSoapBodyContent(responseXml);
+
+      if (!this.verifyResponse(bodyXml, resSignature)) {
         throw new Error("Response signature verification failed");
       }
 
@@ -215,13 +222,23 @@ export class MoovProvider implements MobileMoneyProvider {
       const signature = this.signPayload(bodyContent);
       const requestXml = this.buildSoapEnvelope("GetTransactionStatus", bodyContent, signature);
 
-      const response = await this.client.post("", requestXml, {
-        headers: { SOAPAction: "GetTransactionStatus" },
+      const response = await axios.post(this.baseUrl, requestXml, {
+        headers: {
+          "Content-Type": "text/xml; charset=utf-8",
+          "Accept": "text/xml",
+          SOAPAction: "GetTransactionStatus",
+        },
       });
 
       const responseXml = response.data;
-      const { signature: resSignature, cleanXml } = this.cleanXmlForVerification(responseXml);
-      if (!this.verifyResponse(cleanXml, resSignature)) {
+      const signatureMatch = responseXml.match(/<Signature[^>]*>([^<]+)<\/Signature>/);
+      if (!signatureMatch) {
+        throw new Error("Response signature verification failed: SOAP response is missing Signature header");
+      }
+      const resSignature = signatureMatch[1].trim();
+      const bodyXml = this.getSoapBodyContent(responseXml);
+
+      if (!this.verifyResponse(bodyXml, resSignature)) {
         throw new Error("Response signature verification failed");
       }
 
