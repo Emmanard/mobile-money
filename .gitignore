@@ -1,20 +1,51 @@
+# Dependencies
 node_modules/
-contracts/target/
+
+# Build outputs
 dist/
+contracts/target/
+*.tsbuildinfo
+.docusaurus/
+
+# Kotlin SDK build artifacts
+sdk/build/
+sdk/.gradle/
+gradle-temp/
+
+# Environment and secrets
 .env
-.idea
-*.log
-.DS_Store
+.env.local
+.env.*.local
+certs/
+.orange-session/
+
+# Test coverage
 coverage/
 .nyc_output/
-*.tsbuildinfo
 stryker-tmp/
 
+# Logs
+*.log
+pact.log
+*.pact.log
+
+# OS files
+.DS_Store
+.idea
+.vscode/settings.json
+
+# Kiro
 .kiro/
 
-yarn.lock
-certs/
-.env
+
 
 # Load test output
 tests/load/results/*.json
+benchmarks/results/*.json
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+secret.yaml

@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { redisClient } from "../config/redis";
 
 /**
  * Rate Limit Configuration
@@ -8,6 +9,22 @@ export const RATE_LIMIT_CONFIG = {
   // Export endpoint: 5 requests per hour per admin
   EXPORT_LIMIT: 5,
   EXPORT_WINDOW_MS: 60 * 60 * 1000, // 1 hour in milliseconds
+
+  // SEP-24 (Deposit/Withdrawal): 10 requests per minute per user
+  SEP24_LIMIT: 10,
+  SEP24_WINDOW_MS: 60 * 1000, // 1 minute
+
+  // SEP-31 (Send Payment): 5 requests per minute per user
+  SEP31_LIMIT: 5,
+  SEP31_WINDOW_MS: 60 * 1000, // 1 minute
+
+  // SEP-12 (KYC): 20 requests per hour per user
+  SEP12_LIMIT: 20,
+  SEP12_WINDOW_MS: 60 * 60 * 1000, // 1 hour
+
+  // Cancellation rate limit: 5 cancellations per hour per user
+  CANCELLATION_LIMIT: 5,
+  CANCELLATION_WINDOW_MS: 60 * 60 * 1000, // 1 hour
 
   // List queries: warn when requesting more than 1000 items
   MASSIVE_LIST_THRESHOLD: 1000,
@@ -31,6 +48,67 @@ interface RateLimitEntry {
 const rateLimitStore = new Map<string, RateLimitEntry>();
 
 /**
+ * Check and increment rate limit using Redis
+ */
+async function checkRateLimit(
+  key: string,
+  limit: number,
+  windowMs: number
+): Promise<{ allowed: boolean; remaining: number; resetTime: number }> {
+  try {
+    const now = Date.now();
+    const windowStart = Math.floor(now / windowMs) * windowMs;
+    const resetTime = windowStart + windowMs;
+
+    // Use Redis to atomically increment and check
+    const count = await redisClient.incr(key);
+    const countNum = typeof count === 'string' ? parseInt(count, 10) : count;
+
+    // Set expiry on first request in this window
+    if (countNum === 1) {
+      await redisClient.pexpire(key, windowMs);
+    }
+
+    const allowed = countNum <= limit;
+    const remaining = Math.max(0, limit - countNum);
+
+    return { allowed, remaining, resetTime };
+  } catch (error) {
+    console.error("Rate limit Redis error:", error);
+    // Fallback to in-memory if Redis fails
+    return checkRateLimitInMemory(key, limit, windowMs);
+  }
+}
+
+/**
+ * Fallback in-memory rate limit check
+ */
+function checkRateLimitInMemory(
+  key: string,
+  limit: number,
+  windowMs: number
+): { allowed: boolean; remaining: number; resetTime: number } {
+  const now = Date.now();
+  const entry = rateLimitStore.get(key);
+
+  if (!entry || now > entry.resetTime) {
+    // New window
+    rateLimitStore.set(key, {
+      count: 1,
+      resetTime: now + windowMs,
+    });
+    return { allowed: true, remaining: limit - 1, resetTime: now + windowMs };
+  }
+
+  if (entry.count >= limit) {
+    return { allowed: false, remaining: 0, resetTime: entry.resetTime };
+  }
+
+  entry.count++;
+  return { allowed: true, remaining: limit - entry.count, resetTime: entry.resetTime };
+}
+
+/**
  * Log high-severity events
  */
 const logHighSeverity = (message: string, context: Record<string, unknown>) => {
@@ -44,85 +122,272 @@ const logHighSeverity = (message: string, context: Record<string, unknown>) => {
  * Generate a rate limit key based on user ID and endpoint
  */
 const generateRateLimitKey = (userId: string, endpoint: string): string => {
-  return `${userId}:${endpoint}`;
+  return `ratelimit:${userId}:${endpoint}`;
 };
 
 /**
- * Check and update rate limit counter
+ * Middleware: for sep24Routes (Deposit/Withdrawal)
+ * Limit: 10 requests per minute per user
  */
-const checkRateLimit = (
+export const sep24RateLimiter = async (req: Request, res: Response, next: NextFunction) => {
+  const userId = (req as any).user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  const key = generateRateLimitKey(userId, "SEP24");
+  const { allowed, remaining, resetTime } = await checkRateLimit(
+    key,
+    RATE_LIMIT_CONFIG.SEP24_LIMIT,
+    RATE_LIMIT_CONFIG.SEP24_WINDOW_MS,
+  );
+
+  // Set rate limit headers
+  res.setHeader("X-RateLimit-Limit", RATE_LIMIT_CONFIG.SEP24_LIMIT);
+  res.setHeader("X-RateLimit-Remaining", remaining);
+  res.setHeader("X-RateLimit-Reset", new Date(resetTime).toISOString());
+
+  if (!allowed) {
+    const retryAfterSeconds = Math.ceil((resetTime - Date.now()) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+
+    logHighSeverity("SEP-24 rate limit exceeded", {
+      userId,
+      limit: RATE_LIMIT_CONFIG.SEP24_LIMIT,
+      window: "1 minute",
+      path: req.path,
+      method: req.method,
+    });
+
+    return res.status(429).json({
+      error: "Rate limit exceeded for SEP-24 operations",
+      retryAfter: retryAfterSeconds,
+    });
+  }
+
+  next();
+};
+
+interface SlidingRateLimitResult {
+  allowed: boolean;
+  remaining: number;
+  retryAfterSeconds: number;
+  resetTime: number;
+}
+
+async function checkSlidingWindowRateLimit(
   key: string,
   limit: number,
   windowMs: number,
-): { allowed: boolean; remaining: number; resetTime: number } => {
+): Promise<SlidingRateLimitResult> {
   const now = Date.now();
-  let entry = rateLimitStore.get(key);
+  const windowStart = now - windowMs;
+  const expireSeconds = Math.ceil(windowMs / 1000) + 60;
+  const member = `${now}:${Math.random().toString(36).slice(2, 12)}`;
 
-  // If entry doesn't exist or has expired, create a new one
-  if (!entry || now > entry.resetTime) {
-    entry = {
-      count: 0,
+  if (!redisClient.isOpen) {
+    return {
+      allowed: true,
+      remaining: limit,
+      retryAfterSeconds: 0,
       resetTime: now + windowMs,
     };
-    rateLimitStore.set(key, entry);
   }
 
-  const remaining = Math.max(0, limit - entry.count);
-  const allowed = entry.count < limit;
+  const script = `
+    local key = KEYS[1]
+    local now = tonumber(ARGV[1])
+    local windowStart = tonumber(ARGV[2])
+    local maxRequests = tonumber(ARGV[3])
+    local member = ARGV[4]
+    local expireSeconds = tonumber(ARGV[5])
 
-  if (allowed) {
-    entry.count++;
+    redis.call("ZREMRANGEBYSCORE", key, 0, windowStart)
+    local count = redis.call("ZCARD", key)
+
+    if count >= maxRequests then
+      local oldest = 0
+      if count > 0 then
+        local oldestRow = redis.call("ZRANGE", key, 0, 0, "WITHSCORES")
+        oldest = tonumber(oldestRow[2]) or 0
+      end
+      if oldest > 0 then
+        redis.call("EXPIRE", key, expireSeconds)
+      end
+      return {0, count, oldest}
+    end
+
+    redis.call("ZADD", key, now, member)
+    count = count + 1
+    local oldestRow = redis.call("ZRANGE", key, 0, 0, "WITHSCORES")
+    local oldest = tonumber(oldestRow[2]) or now
+    redis.call("EXPIRE", key, expireSeconds)
+    return {1, count, oldest}
+  `;
+
+  try {
+    const result = (await redisClient.sendCommand([
+      "EVAL",
+      script,
+      "1",
+      key,
+      String(now),
+      String(windowStart),
+      String(limit),
+      member,
+      String(expireSeconds),
+    ])) as unknown as [string | number, string | number, string | number];
+
+    const allowed = String(result[0]) === "1";
+    const count = Number(result[1]);
+    const oldestScore = Number(result[2] || now);
+    const retryAfterSeconds = allowed
+      ? 0
+      : Math.max(1, Math.ceil((oldestScore + windowMs - now) / 1000));
+    const resetTime = oldestScore > 0 ? oldestScore + windowMs : now + windowMs;
+
+    return {
+      allowed,
+      remaining: allowed ? Math.max(0, limit - count) : 0,
+      retryAfterSeconds,
+      resetTime,
+    };
+  } catch (error) {
+    console.error("Cancellation rate limit Redis error:", error);
+    return {
+      allowed: true,
+      remaining: limit,
+      retryAfterSeconds: 0,
+      resetTime: now + windowMs,
+    };
+  }
+}
+
+export const cancelTransactionRateLimiter = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const userId = req.jwtUser?.userId;
+
+  if (!userId) {
+    return res.status(401).json({
+      error: "Unauthorized",
+      message: "Valid token required",
+    });
   }
 
-  return {
+  const key = `cancellation:events:${userId}`;
+  const {
     allowed,
     remaining,
-    resetTime: entry.resetTime,
-  };
-};
+    retryAfterSeconds,
+    resetTime,
+  } = await checkSlidingWindowRateLimit(
+    key,
+    RATE_LIMIT_CONFIG.CANCELLATION_LIMIT,
+    RATE_LIMIT_CONFIG.CANCELLATION_WINDOW_MS,
+  );
 
-/**
- * Middleware: for sep24Routes
- * Limit: 
- */
-export const sep24RateLimiter = (req: Request, res: Response, next: NextFunction) => {
-  // TODO: This is a STUB and need implmentation
-  const userId = (req as any).user?.id;
+  res.setHeader("X-RateLimit-Limit", String(RATE_LIMIT_CONFIG.CANCELLATION_LIMIT));
+  res.setHeader("X-RateLimit-Remaining", String(remaining));
+  res.setHeader("X-RateLimit-Reset", new Date(resetTime).toISOString());
 
-  if (!userId) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
- 
- 
-
-  next();
-};
-
-/**
- * Middleware: for sep31RateLimiter
- * Limit: 
- */
-export const sep31RateLimiter = (req: Request, res: Response, next: NextFunction) => {
-  // TODO: This is a STUB and need implmentation
-  const userId = (req as any).user?.id;
-
-  if (!userId) {
-    return res.status(401).json({ message: "Unauthorized" });
+  if (!allowed) {
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+    return res.status(429).json({
+      error: "Too Many Requests",
+      message: `Too many transaction cancellation requests. Try again in ${retryAfterSeconds} seconds.`,
+    });
   }
 
   next();
 };
 
 /**
- * Middleware: for sep12RateLimiter
- * Limit: 
+ * Middleware: for sep31RateLimiter (Send Payment)
+ * Limit: 5 requests per minute per user
  */
-export const sep12RateLimiter = (req: Request, res: Response, next: NextFunction) => {
-  // TODO: This is a STUB and need implmentation
+export const sep31RateLimiter = async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req as any).user?.id;
 
   if (!userId) {
     return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  const key = generateRateLimitKey(userId, "SEP31");
+  const { allowed, remaining, resetTime } = await checkRateLimit(
+    key,
+    RATE_LIMIT_CONFIG.SEP31_LIMIT,
+    RATE_LIMIT_CONFIG.SEP31_WINDOW_MS,
+  );
+
+  // Set rate limit headers
+  res.setHeader("X-RateLimit-Limit", RATE_LIMIT_CONFIG.SEP31_LIMIT);
+  res.setHeader("X-RateLimit-Remaining", remaining);
+  res.setHeader("X-RateLimit-Reset", new Date(resetTime).toISOString());
+
+  if (!allowed) {
+    const retryAfterSeconds = Math.ceil((resetTime - Date.now()) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+
+    logHighSeverity("SEP-31 rate limit exceeded", {
+      userId,
+      limit: RATE_LIMIT_CONFIG.SEP31_LIMIT,
+      window: "1 minute",
+      path: req.path,
+      method: req.method,
+    });
+
+    return res.status(429).json({
+      error: "Rate limit exceeded for SEP-31 operations",
+      retryAfter: retryAfterSeconds,
+    });
+  }
+
+  next();
+};
+
+/**
+ * Middleware: for sep12RateLimiter (KYC)
+ * Limit: 20 requests per hour per user
+ */
+export const sep12RateLimiter = async (req: Request, res: Response, next: NextFunction) => {
+  const userId = (req as any).user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  const key = generateRateLimitKey(userId, "SEP12");
+  const { allowed, remaining, resetTime } = await checkRateLimit(
+    key,
+    RATE_LIMIT_CONFIG.SEP12_LIMIT,
+    RATE_LIMIT_CONFIG.SEP12_WINDOW_MS,
+  );
+
+  // Set rate limit headers
+  res.setHeader("X-RateLimit-Limit", RATE_LIMIT_CONFIG.SEP12_LIMIT);
+  res.setHeader("X-RateLimit-Remaining", remaining);
+  res.setHeader("X-RateLimit-Reset", new Date(resetTime).toISOString());
+
+  if (!allowed) {
+    const retryAfterSeconds = Math.ceil((resetTime - Date.now()) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+
+    logHighSeverity("SEP-12 rate limit exceeded", {
+      userId,
+      limit: RATE_LIMIT_CONFIG.SEP12_LIMIT,
+      window: "1 hour",
+      path: req.path,
+      method: req.method,
+    });
+
+    return res.status(429).json({
+      error: "Rate limit exceeded for SEP-12 operations",
+      retryAfter: retryAfterSeconds,
+    });
   }
 
   next();
@@ -133,7 +398,7 @@ export const sep12RateLimiter = (req: Request, res: Response, next: NextFunction
  * Middleware: Rate limit for export endpoints
  * Limit: 5 exports per hour per admin
  */
-export const rateLimitExport = (
+export const rateLimitExport = async (
   req: Request,
   res: Response,
   next: NextFunction,
@@ -145,7 +410,7 @@ export const rateLimitExport = (
   }
 
   const key = generateRateLimitKey(userId, "EXPORT");
-  const { allowed, remaining, resetTime } = checkRateLimit(
+  const { allowed, remaining, resetTime } = await checkRateLimit(
     key,
     RATE_LIMIT_CONFIG.EXPORT_LIMIT,
     RATE_LIMIT_CONFIG.EXPORT_WINDOW_MS,
@@ -157,6 +422,9 @@ export const rateLimitExport = (
   res.setHeader("X-RateLimit-Reset", new Date(resetTime).toISOString());
 
   if (!allowed) {
+    const retryAfterSeconds = Math.ceil((resetTime - Date.now()) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+
     logHighSeverity("Export rate limit exceeded", {
       userId,
       limit: RATE_LIMIT_CONFIG.EXPORT_LIMIT,
@@ -168,7 +436,7 @@ export const rateLimitExport = (
     return res.status(429).json({
       message: "Rate limit exceeded for exports",
       error: "TOO_MANY_EXPORT_REQUESTS",
-      retryAfter: Math.ceil((resetTime - Date.now()) / 1000),
+      retryAfter: retryAfterSeconds,
       resetTime: new Date(resetTime).toISOString(),
     });
   }

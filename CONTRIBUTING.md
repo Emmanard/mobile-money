@@ -4,6 +4,27 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 ## 🌟 Ways to Contribute
 
+1. Fork the repository
+2. Clone your fork: `git clone https://github.com/your-username/backend.git`
+3. Add the original repository as an upstream remote:
+   `git remote add upstream https://github.com/sublime247/mobile-money.git`
+4. Sync your local main branch with upstream:
+   `git checkout main`
+   `git pull upstream main`
+5. Create a feature branch: `git checkout -b feature/your-feature`
+6. Make your changes.
+7. Run tests and linting.
+8. Commit: `git commit -m "Add your feature"`
+9. Push: `git push origin feature/your-feature`
+10. Open a Pull Request:
+    *   Go to your forked repository on GitHub.
+    *   Click the "Compare & pull request" button.
+    *   Ensure the base repository is `sublime247/mobile-money` (main branch) and the head repository is your fork (your feature branch).
+    *   Provide a clear and descriptive title and description for your Pull Request. Include:
+        *   A summary of the changes.
+        *   Why these changes were made (e.g., fixing a bug, adding a feature).
+        *   References to any related issues (e.g., `Fixes #123`).
+        *   Instructions on how to test your changes.
 - **Report bugs** via GitHub Issues
 - **Suggest features** or enhancements
 - **Improve documentation**
@@ -110,12 +131,20 @@ npm test -- path/to/test.ts
 
 # Run with coverage
 npm run test:coverage
+
+# Run Pact contract tests
+npm run test:pact
 ```
 
 **Test Coverage Requirements:**
 - Minimum 70% coverage for all metrics
 - New features must have >80% coverage
 - Bug fixes must include regression tests
+
+**Contract Testing:**
+- Provider API changes require updating Pact contracts
+- Run `npm run test:pact` to verify contracts
+- See `tests/pact/README.md` for details
 
 ### Code Review Checklist
 
@@ -296,6 +325,20 @@ New to the project? Look for issues labeled `good first issue`:
 - Fix typos
 - Add logging
 
+## 🔔 CI Slack Notifications
+
+When a CI run fails on the `main` branch, an automatic Slack notification is sent with the workflow name, triggering actor, commit SHA, and a direct link to the failed run.
+
+### Required secret
+
+| Secret name | Where to get it |
+|---|---|
+| `SLACK_WEBHOOK_URL` | Create an [Incoming Webhook](https://api.slack.com/messaging/webhooks) in your Slack workspace, then add the generated URL as a repository secret under **Settings → Secrets and variables → Actions**. |
+
+Notifications fire **only** on `main` branch failures. Passing builds and pull-request runs are never notified.
+
+---
+
 ## 🔒 Security Issues
 
 **DO NOT** open public issues for security vulnerabilities.
@@ -382,12 +425,27 @@ Add translations to `src/locales/`.
 
 ## 🔐 Security Considerations
 
-- Never commit secrets or API keys
-- Validate all user input
-- Use parameterized queries
-- Implement rate limiting
-- Follow OWASP guidelines
-- Use security headers (Helmet)
+**🚨 CRITICAL: Never commit secrets or API keys**
+
+- Use environment variables for ALL sensitive data (API keys, passwords, tokens, etc.)
+- Check [Secrets Management Guide](./docs/SECRETS_MANAGEMENT.md) for detailed guidelines
+- All secrets must be managed via GitHub Actions Secrets or environment variables
+- GitGuardian scans all PRs for accidentally committed secrets
+- If you accidentally commit a secret:
+  1. Immediately revoke the compromised credential
+  2. Remove it from your PR using `git filter-branch` or force push with amended commits
+  3. Notify the security team
+  4. Never reuse the same credential
+
+**Other Security Requirements:**
+- Validate all user input (use libraries like `zod` for schema validation)
+- Use parameterized queries (never string concatenation for SQL)
+- Implement rate limiting on all public endpoints
+- Follow OWASP guidelines (see [OWASP Top 10](https://owasp.org/www-project-top-ten/))
+- Use security headers (Helmet middleware)
+- Enable CORS correctly (restrict to known origins)
+- Implement proper authentication and authorization
+- Keep dependencies up to date (check with `npm audit`)
 
 ## 📦 Dependencies
 

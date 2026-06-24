@@ -1,4 +1,4 @@
-import { SSOConfig } from "../auth/sso";
+import { SSOConfig } from "../auth/sso.js";
 
 /**
  * SSO Configuration
@@ -10,6 +10,19 @@ export interface SSOEnvironmentConfig {
   providers: SSOConfig[];
   enforceSSOForEmployees: boolean;
   employeeEmailDomain?: string;
+  oidc: {
+    google?: {
+      clientID?: string;
+      clientSecret?: string;
+      callbackURL?: string;
+    };
+    azure?: {
+      clientID?: string;
+      clientSecret?: string;
+      issuer?: string;
+      callbackURL?: string;
+    };
+  };
 }
 
 /**
@@ -24,6 +37,7 @@ export function loadSSOConfig(): SSOEnvironmentConfig {
       enabled: false,
       providers: [],
       enforceSSOForEmployees: false,
+      oidc: {},
     };
   }
 
@@ -70,6 +84,19 @@ export function loadSSOConfig(): SSOEnvironmentConfig {
     providers,
     enforceSSOForEmployees: process.env.SSO_ENFORCE_EMPLOYEES === "true",
     employeeEmailDomain: process.env.SSO_EMPLOYEE_EMAIL_DOMAIN,
+    oidc: {
+      google: {
+        clientID: process.env.SSO_GOOGLE_CLIENT_ID,
+        clientSecret: process.env.SSO_GOOGLE_CLIENT_SECRET,
+        callbackURL: process.env.SSO_GOOGLE_CALLBACK_URL,
+      },
+      azure: {
+        clientID: process.env.SSO_AZURE_OIDC_CLIENT_ID,
+        clientSecret: process.env.SSO_AZURE_OIDC_CLIENT_SECRET,
+        issuer: process.env.SSO_AZURE_OIDC_ISSUER,
+        callbackURL: process.env.SSO_AZURE_OIDC_CALLBACK_URL,
+      },
+    },
   };
 }
 
@@ -108,6 +135,37 @@ export function validateSSOConfig(config: SSOEnvironmentConfig): string[] {
     );
   }
 
+  if (
+    config.oidc.google &&
+    (config.oidc.google.clientID || config.oidc.google.clientSecret || config.oidc.google.callbackURL)
+  ) {
+    if (
+      !config.oidc.google.clientID ||
+      !config.oidc.google.clientSecret ||
+      !config.oidc.google.callbackURL
+    ) {
+      errors.push(
+        "SSO OIDC Google configuration is incomplete: clientID, clientSecret, and callbackURL are required"
+      );
+    }
+  }
+
+  if (
+    config.oidc.azure &&
+    (config.oidc.azure.clientID || config.oidc.azure.clientSecret || config.oidc.azure.issuer || config.oidc.azure.callbackURL)
+  ) {
+    if (
+      !config.oidc.azure.clientID ||
+      !config.oidc.azure.clientSecret ||
+      !config.oidc.azure.issuer ||
+      !config.oidc.azure.callbackURL
+    ) {
+      errors.push(
+        "SSO OIDC Azure configuration is incomplete: clientID, clientSecret, issuer, and callbackURL are required"
+      );
+    }
+  }
+
   return errors;
 }
 
@@ -128,7 +186,7 @@ export async function initializeSSOProviders(): Promise<void> {
     return;
   }
 
-  const { ssoService } = await import("../auth/sso");
+  const { ssoService } = await import("../auth/sso.js");
 
   for (const providerConfig of config.providers) {
     try {

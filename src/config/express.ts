@@ -19,6 +19,7 @@
 import cors, { type CorsOptions } from "cors";
 import helmet, { type HelmetOptions } from "helmet";
 import type { Application, Request, Response, NextFunction } from "express";
+import { maintenanceModeMiddleware } from "../middleware/maintenanceMode";
 
 
 /**
@@ -274,7 +275,7 @@ export const helmetOptions: HelmetOptions = {
  *
  * Reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy
  */
-function permissionsPolicyMiddleware(
+export function permissionsPolicyMiddleware(
   _req: Request,
   res: Response,
   next: NextFunction,
@@ -306,7 +307,7 @@ function permissionsPolicyMiddleware(
  * Middleware that sets the `Report-To` header required by the CSP `report-to`
  * directive.  Only attached when CSP_REPORT_URI is configured.
  */
-function reportToMiddleware(
+export function reportToMiddleware(
   req: Request,
   res: Response,
   next: NextFunction,
@@ -357,6 +358,9 @@ export function applySecurityMiddleware(app: Application): void {
   // 4. CORS (exact-match allowlist, no wildcards).
   app.use(cors(corsOptions));
 
-  // 5. Respond to all OPTIONS preflight requests immediately.
+  // 5. Maintenance Mode (blocks non-GET requests when active)
+  app.use(maintenanceModeMiddleware);
+
+  // 6. Respond to all OPTIONS preflight requests immediately.
   app.options("*", cors(corsOptions));
 }

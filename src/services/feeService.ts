@@ -1,5 +1,5 @@
 import { pool } from "../config/database";
-import { redisClient } from "../config/redis";
+import { layeredCache } from "./layeredCache";
 
 export interface FeeConfiguration {
   id: string;
@@ -65,10 +65,9 @@ export class FeeService {
    */
   async getActiveConfiguration(): Promise<FeeConfiguration> {
     // Try cache first
-    const cached = await redisClient.get(ACTIVE_CONFIG_KEY);
+    const cached = await layeredCache.get<FeeConfiguration>(ACTIVE_CONFIG_KEY);
     if (cached) {
-      const cachedStr = typeof cached === 'string' ? cached : cached.toString();
-      return JSON.parse(cachedStr);
+      return cached;
     }
 
     // Fetch from database
@@ -99,7 +98,7 @@ export class FeeService {
     const config = result.rows[0];
     
     // Cache the result
-    await redisClient.setEx(ACTIVE_CONFIG_KEY, CACHE_TTL, JSON.stringify(config));
+    await layeredCache.set(ACTIVE_CONFIG_KEY, config, CACHE_TTL);
     
     return config;
   }
@@ -135,10 +134,9 @@ export class FeeService {
   async getConfigurationById(id: string): Promise<FeeConfiguration | null> {
     // Try cache first
     const cacheKey = `${CACHE_KEY_PREFIX}${id}`;
-    const cached = await redisClient.get(cacheKey);
+    const cached = await layeredCache.get<FeeConfiguration>(cacheKey);
     if (cached) {
-      const cachedStr = typeof cached === 'string' ? cached : cached.toString();
-      return JSON.parse(cachedStr);
+      return cached;
     }
 
     const query = `
@@ -166,7 +164,7 @@ export class FeeService {
     const config = result.rows[0];
     
     // Cache the result
-    await redisClient.setEx(cacheKey, CACHE_TTL, JSON.stringify(config));
+    await layeredCache.set(cacheKey, config, CACHE_TTL);
     
     return config;
   }
@@ -446,8 +444,8 @@ export class FeeService {
   private async invalidateCache(id: string): Promise<void> {
     const cacheKey = `${CACHE_KEY_PREFIX}${id}`;
     await Promise.all([
-      redisClient.del(cacheKey),
-      redisClient.del(ACTIVE_CONFIG_KEY),
+      layeredCache.del(cacheKey),
+      layeredCache.del(ACTIVE_CONFIG_KEY),
     ]);
   }
 
@@ -455,14 +453,10 @@ export class FeeService {
    * Invalidate all fee configuration caches
    */
   private async invalidateAllCaches(): Promise<void> {
-    const pattern = `${CACHE_KEY_PREFIX}*`;
-    const keys = await redisClient.keys(pattern);
-    if (keys.length > 0) {
-      for (const key of keys) {
-        await redisClient.del(key);
-      }
-    }
-    await redisClient.del(ACTIVE_CONFIG_KEY);
+    await Promise.all([
+      layeredCache.delPattern(`${CACHE_KEY_PREFIX}*`),
+      layeredCache.del(ACTIVE_CONFIG_KEY),
+    ]);
   }
 }
 

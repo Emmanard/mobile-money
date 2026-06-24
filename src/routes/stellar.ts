@@ -1,7 +1,8 @@
 import { Router, Request, Response } from "express";
 import { sep24RateLimiter as stellarRateLimiter } from "../middleware/rateLimit";
 import NodeCache from "node-cache";
-import { StrKey, Horizon } from "stellar-sdk";
+import { StrKey } from "stellar-sdk";
+import { getStellarServer } from "../config/stellar";
 
 const router = Router();
 
@@ -11,10 +12,8 @@ const cache = new NodeCache({ stdTTL: 300 });
 // Rate limiter (per IP)
 const limiter = stellarRateLimiter;
 
-// Horizon server
-const server = new Horizon.Server(
-  process.env.STELLAR_HORIZON_URL || "https://horizon-testnet.stellar.org",
-);
+// Horizon server (pooled — automatic round-robin failover across nodes)
+const server = getStellarServer();
 
 router.get(
   "/balance/:address",
@@ -32,8 +31,8 @@ router.get(
 
     //Check cache
     const cached = cache.get(address);
-    if (cached) {
-      return res.json({ ...cached, cached: true });
+    if (cached && typeof cached === "object") {
+      return res.json({ ...(cached as Record<string, unknown>), cached: true });
     }
 
     try {

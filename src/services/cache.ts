@@ -5,6 +5,7 @@ import {
   cacheMissesTotal,
   cacheHitRatio,
 } from "../utils/metrics";
+import { layeredCache } from "./layeredCache";
 
 export type CacheOptions = {
   // TTL in seconds or function(req) => number
@@ -55,48 +56,19 @@ function getTTL(opts?: CacheOptions, req?: Request) {
 }
 
 async function getFromCache(fullKey: string) {
-  if (!redisClient || !redisClient.isOpen) return null;
-  try {
-    const raw = await redisClient.get(fullKey);
-    if (!raw) return null;
-    const rawStr = typeof raw === 'string' ? raw : raw.toString();
-    return JSON.parse(rawStr);
-  } catch (err) {
-    // Swallow cache errors; caching is a best-effort optimisation
-    console.warn("Cache: get error", err);
-    return null;
-  }
+  return layeredCache.get(fullKey);
 }
 
 async function setToCache(fullKey: string, ttlSec: number, value: unknown) {
-  if (!redisClient || !redisClient.isOpen) return;
-  try {
-    await redisClient.setEx(fullKey, ttlSec, JSON.stringify(value));
-  } catch (err) {
-    console.warn("Cache: set error", err);
-  }
+  return layeredCache.set(fullKey, value, ttlSec);
 }
 
 export async function invalidateCache(key: string) {
-  if (!redisClient || !redisClient.isOpen) return 0;
-  try {
-    return await redisClient.del(key);
-  } catch (err) {
-    console.warn("Cache: invalidate error", err);
-    return 0;
-  }
+  return layeredCache.del(key);
 }
 
 export async function invalidatePattern(pattern: string) {
-  if (!redisClient || !redisClient.isOpen) return 0;
-  try {
-    const keys = await redisClient.keys(pattern);
-    if (!keys || keys.length === 0) return 0;
-    return await redisClient.del(keys);
-  } catch (err) {
-    console.warn("Cache: invalidatePattern error", err);
-    return 0;
-  }
+  return layeredCache.delPattern(pattern);
 }
 
 // Helper to update cache hit ratio gauge for a given route
@@ -168,8 +140,8 @@ export function Cache(opts?: CacheOptions) {
           // Serve cached response directly
           res.setHeader("X-Cache", "HIT");
           // If cached contains statusCode and body we try to restore; otherwise send JSON
-          if (cached && typeof cached === "object" && cached.__rawResponse) {
-            const { statusCode, body } = cached.__rawResponse;
+          if (cached && typeof cached === "object" && (cached as any).__rawResponse) {
+            const { statusCode, body } = (cached as any).__rawResponse;
             res.status(statusCode).json(body);
             return;
           }
