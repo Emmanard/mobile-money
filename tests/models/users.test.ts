@@ -37,6 +37,7 @@ describe("UserModel - Mocked Unit Tests", () => {
       phone_number: "encrypted-phone-number",
       kyc_level: "basic",
       email: "encrypted-email",
+      display_name: "Coffee Shop",
       two_factor_secret: "encrypted-2fa",
       backup_codes: null,
       status: "active",
@@ -86,6 +87,7 @@ describe("UserModel - Mocked Unit Tests", () => {
       expect(decryptField).not.toHaveBeenCalled();
       expect(result).toBeDefined();
       expect(result!.firstName).toBe("v1:encrypted-firstname"); // Stays as raw string from DB
+      expect(result!.displayName).toBe("Coffee Shop");
     });
 
     it("should NOT decrypt sensitive fields when requester is undefined", async () => {
@@ -113,6 +115,17 @@ describe("UserModel - Mocked Unit Tests", () => {
       const [query, params] = (queryWrite as jest.Mock).mock.calls[0];
       expect(query).toContain("UPDATE users SET first_name = $1, last_name = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3");
       expect(params[2]).toBe(mockUserId);
+    });
+  });
+
+  describe("updateDisplayName", () => {
+    it("should persist the merchant display name", async () => {
+      await userModel.updateDisplayName(mockUserId, "Corner Cafe");
+
+      expect(queryWrite).toHaveBeenCalledWith(
+        "UPDATE users SET display_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+        ["Corner Cafe", mockUserId],
+      );
     });
   });
 });

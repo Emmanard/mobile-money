@@ -1,6 +1,7 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, token, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env};
 
 // ── Error types ──────────────────────────────────────────────────────────────
 
@@ -108,12 +109,21 @@ impl EscrowContract {
             "emergency unlock must be in the future"
         );
         assert!(fee_bps <= 10_000, "fee basis points must be in [0, 10000]");
-        assert!(depositor != beneficiary, "beneficiary must differ from depositor");
-        assert!(arbiter != depositor && arbiter != beneficiary, "arbiter must differ from depositor and beneficiary");
+        assert!(
+            depositor != beneficiary,
+            "beneficiary must differ from depositor"
+        );
+        assert!(
+            arbiter != depositor && arbiter != beneficiary,
+            "arbiter must differ from depositor and beneficiary"
+        );
 
         // Pull funds from depositor into the contract.
-        token::Client::new(&env, &token)
-            .transfer(&depositor, &env.current_contract_address(), &amount);
+        token::Client::new(&env, &token).transfer(
+            &depositor,
+            env.current_contract_address(),
+            &amount,
+        );
 
         env.storage().instance().set(
             &ESCROW,
@@ -152,9 +162,7 @@ impl EscrowContract {
             return Err(EscrowError::AlreadyReleased);
         }
         // Arbiter cannot release after the lock has expired.
-        if state.lock_until_ledger > 0
-            && env.ledger().sequence() > state.lock_until_ledger
-        {
+        if state.lock_until_ledger > 0 && env.ledger().sequence() > state.lock_until_ledger {
             return Err(EscrowError::LockExpired);
         }
 
@@ -190,14 +198,15 @@ impl EscrowContract {
         if state.released {
             return Err(EscrowError::AlreadyReleased);
         }
-        if state.lock_until_ledger > 0
-            && env.ledger().sequence() > state.lock_until_ledger
-        {
+        if state.lock_until_ledger > 0 && env.ledger().sequence() > state.lock_until_ledger {
             return Err(EscrowError::LockExpired);
         }
 
-        token::Client::new(&env, &state.token)
-            .transfer(&env.current_contract_address(), &state.depositor, &state.amount);
+        token::Client::new(&env, &state.token).transfer(
+            &env.current_contract_address(),
+            &state.depositor,
+            &state.amount,
+        );
 
         state.released = true;
         env.storage().instance().set(&ESCROW, &state);
@@ -209,7 +218,11 @@ impl EscrowContract {
     /// Emergency refund to the depositor after the unlock timestamp.
     /// Allows source wallets to recover funds during an extended bridge outage.
     pub fn emergency_refund(env: Env) {
-        let mut state: EscrowState = env.storage().instance().get(&ESCROW).expect("not initialised");
+        let mut state: EscrowState = env
+            .storage()
+            .instance()
+            .get(&ESCROW)
+            .expect("not initialised");
 
         state.depositor.require_auth();
         assert!(!state.released, "already released");
@@ -218,8 +231,11 @@ impl EscrowContract {
             "emergency unlock not yet available"
         );
 
-        token::Client::new(&env, &state.token)
-            .transfer(&env.current_contract_address(), &state.depositor, &state.amount);
+        token::Client::new(&env, &state.token).transfer(
+            &env.current_contract_address(),
+            &state.depositor,
+            &state.amount,
+        );
 
         state.released = true;
         env.storage().instance().set(&ESCROW, &state);
@@ -242,14 +258,15 @@ impl EscrowContract {
             return Err(EscrowError::AlreadyReleased);
         }
         // Time-lock must have passed.
-        if state.lock_until_ledger == 0
-            || env.ledger().sequence() <= state.lock_until_ledger
-        {
+        if state.lock_until_ledger == 0 || env.ledger().sequence() <= state.lock_until_ledger {
             return Err(EscrowError::LockNotExpired);
         }
 
-        token::Client::new(&env, &state.token)
-            .transfer(&env.current_contract_address(), &state.depositor, &state.amount);
+        token::Client::new(&env, &state.token).transfer(
+            &env.current_contract_address(),
+            &state.depositor,
+            &state.amount,
+        );
 
         state.released = true;
         env.storage().instance().set(&ESCROW, &state);
@@ -261,7 +278,11 @@ impl EscrowContract {
 
     /// Return current escrow state (read-only).
     pub fn get_state(env: Env) -> EscrowState {
-        let state = env.storage().instance().get(&ESCROW).expect("not initialised");
+        let state = env
+            .storage()
+            .instance()
+            .get(&ESCROW)
+            .expect("not initialised");
         env.storage().instance().extend_ttl(1000, 10000);
         state
     }
@@ -317,6 +338,7 @@ mod tests {
     }
 
     // Helper: initialise with common defaults
+    #[allow(clippy::too_many_arguments)]
     fn init(
         client: &EscrowContractClient,
         depositor: &Address,
@@ -361,7 +383,7 @@ mod tests {
             &amount,
             &emergency_unlock_timestamp,
             &100, // lock_until_ledger
-            &0, // fee_bps
+            &0,   // fee_bps
             &fee_recipient,
         );
 
@@ -382,7 +404,17 @@ mod tests {
         // 2.5 % fee → fee = 12 500, net = 487 500
         let fee_bps: u32 = 250;
 
-        init(&client, &depositor, &beneficiary, &arbiter, &token, amount, 100, fee_bps, &fee_recipient);
+        init(
+            &client,
+            &depositor,
+            &beneficiary,
+            &arbiter,
+            &token,
+            amount,
+            100,
+            fee_bps,
+            &fee_recipient,
+        );
 
         client.release();
 
@@ -402,7 +434,17 @@ mod tests {
         let (env, depositor, beneficiary, arbiter, fee_recipient, token, client) = setup();
         let amount: i128 = 300_000;
 
-        init(&client, &depositor, &beneficiary, &arbiter, &token, amount, 50, 0, &fee_recipient);
+        init(
+            &client,
+            &depositor,
+            &beneficiary,
+            &arbiter,
+            &token,
+            amount,
+            50,
+            0,
+            &fee_recipient,
+        );
 
         client.release();
 
@@ -428,7 +470,7 @@ mod tests {
             &amount,
             &emergency_unlock_timestamp,
             &100, // lock_until_ledger
-            &0, // fee_bps
+            &0,   // fee_bps
             &fee_recipient,
         );
         client.refund();
@@ -453,7 +495,7 @@ mod tests {
             &amount,
             &emergency_unlock_timestamp,
             &100, // lock_until_ledger
-            &0, // fee_bps
+            &0,   // fee_bps
             &fee_recipient,
         );
 

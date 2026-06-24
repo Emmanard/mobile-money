@@ -70,8 +70,10 @@ export class EmailService {
     email: string,
     transaction: Transaction,
     locale = "en",
+    merchantDisplayName?: string | null,
   ): Promise<void> {
     const resolvedLocale = resolveLocale(locale);
+    const transactionHash = transaction.transactionHash;
     await this.sendEmail({
       to: email,
       templateId: this.resolveTemplateId(
@@ -89,8 +91,11 @@ export class EmailService {
         provider: transaction.provider.toUpperCase(),
         phoneNumber: transaction.phoneNumber,
         stellarAddress: transaction.stellarAddress,
-        transactionHash: txHash,
-        stellarExpertUrl,
+        transactionHash,
+        stellarExpertUrl: transactionHash
+          ? `https://stellar.expert/explorer/public/tx/${transactionHash}`
+          : undefined,
+        merchantDisplayName: merchantDisplayName ?? undefined,
         createdAt: new Date(transaction.createdAt).toLocaleString(resolvedLocale),
         locale: resolvedLocale,
         year: new Date().getFullYear(),
@@ -172,6 +177,7 @@ export class EmailService {
     transaction: Transaction,
     reason: string,
     locale = "en",
+    merchantDisplayName?: string | null,
   ): Promise<void> {
     const resolvedLocale = resolveLocale(locale);
     await this.sendEmail({
@@ -190,6 +196,7 @@ export class EmailService {
         referenceNumber: transaction.referenceNumber,
         reason,
         reasonLabel: translate("email.labels.reason", resolvedLocale),
+        merchantDisplayName: merchantDisplayName ?? undefined,
         locale: resolvedLocale,
         year: new Date().getFullYear(),
       },

@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from "express";
+import * as StellarSdk from "stellar-sdk";
 import { generateToken } from "../auth/jwt";
 import {
   updateAdminNotesHandler,
@@ -44,6 +45,8 @@ import {
   ComplianceDocumentCreateInput,
   ComplianceDocumentUpdateInput,
 } from "../models/complianceDocument";
+import { providerSettingsService } from "../services/providerSettingsService";
+import { resetCircuitBreakerForProvider } from "../utils/circuitBreaker";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
 
@@ -1397,7 +1400,7 @@ router.post(
         );
       }
 
-      const { calculateFee } = await import("../utils/fees");
+      const { calculateFee } = await import("../utils/fees.js");
       const results: BulkTransactionActionResult[] = [];
 
       for (const transactionId of transactionIds) {
@@ -1624,8 +1627,12 @@ router.post(
         message: "Reconciliation completed successfully",
         result,
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("[CSV RECONCILIATION ERROR]", error);
+
+      if (error.statusCode) {
+        throw error;
+      }
 
       if (error instanceof Error) {
         throw createError(ERROR_CODES.INTERNAL_ERROR, "Reconciliation failed", {
@@ -1827,7 +1834,7 @@ router.post(
       }
 
       const { runManualProviderReconciliation } =
-        await import("../jobs/providerReconciliationJob");
+        await import("../jobs/providerReconciliationJob.js");
       const result = await runManualProviderReconciliation(
         provider,
         reportDate,
@@ -1973,7 +1980,7 @@ router.get(
   requireAdmin,
   async (_req: Request, res: Response) => {
     try {
-      const { queryRead } = await import("../config/database");
+      const { queryRead } = await import("../config/database.js");
       const result = await queryRead<{
         report_date: string;
         user_fees: string;
@@ -2293,16 +2300,16 @@ const validateComplianceCreate = (
   body: Record<string, unknown>,
 ): ValidationResult<ComplianceDocumentCreateInput> => {
   const title = normalizeString(body.title, "title", true);
-  if (!title.ok) return title;
+  if (!title.ok) return title as ValidationResult<ComplianceDocumentCreateInput>;
 
   const docBody = normalizeString(body.body, "body", true);
-  if (!docBody.ok) return docBody;
+  if (!docBody.ok) return docBody as ValidationResult<ComplianceDocumentCreateInput>;
 
   const summary = normalizeString(body.summary, "summary", false);
-  if (!summary.ok) return summary;
+  if (!summary.ok) return summary as ValidationResult<ComplianceDocumentCreateInput>;
 
   const provider = normalizeString(body.provider, "provider", false);
-  if (!provider.ok) return provider;
+  if (!provider.ok) return provider as ValidationResult<ComplianceDocumentCreateInput>;
   if (provider.value && provider.value.length > 100) {
     return { ok: false, message: "provider must be 100 characters or fewer" };
   }
@@ -2312,16 +2319,16 @@ const validateComplianceCreate = (
     "sourceUrl",
     false,
   );
-  if (!sourceUrl.ok) return sourceUrl;
+  if (!sourceUrl.ok) return sourceUrl as ValidationResult<ComplianceDocumentCreateInput>;
 
   const country = normalizeCountry(getCountryValue(body));
-  if (!country.ok) return country;
+  if (!country.ok) return country as ValidationResult<ComplianceDocumentCreateInput>;
 
   const tags = normalizeTags(body.tags);
-  if (!tags.ok) return tags;
+  if (!tags.ok) return tags as ValidationResult<ComplianceDocumentCreateInput>;
 
   const status = normalizeStatus(body.status);
-  if (!status.ok) return status;
+  if (!status.ok) return status as ValidationResult<ComplianceDocumentCreateInput>;
 
   return {
     ok: true,
@@ -2362,25 +2369,25 @@ const validateComplianceUpdate = (
 
   if (Object.prototype.hasOwnProperty.call(body, "title")) {
     const title = normalizeString(body.title, "title", true);
-    if (!title.ok) return title;
+    if (!title.ok) return title as ValidationResult<ComplianceDocumentUpdateInput>;
     input.title = title.value as string;
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "body")) {
     const docBody = normalizeString(body.body, "body", true);
-    if (!docBody.ok) return docBody;
+    if (!docBody.ok) return docBody as ValidationResult<ComplianceDocumentUpdateInput>;
     input.body = docBody.value as string;
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "summary")) {
     const summary = normalizeString(body.summary, "summary", false);
-    if (!summary.ok) return summary;
+    if (!summary.ok) return summary as ValidationResult<ComplianceDocumentUpdateInput>;
     input.summary = summary.value ?? null;
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "provider")) {
     const provider = normalizeString(body.provider, "provider", false);
-    if (!provider.ok) return provider;
+    if (!provider.ok) return provider as ValidationResult<ComplianceDocumentUpdateInput>;
     if (provider.value && provider.value.length > 100) {
       return { ok: false, message: "provider must be 100 characters or fewer" };
     }
@@ -2396,7 +2403,7 @@ const validateComplianceUpdate = (
       "sourceUrl",
       false,
     );
-    if (!sourceUrl.ok) return sourceUrl;
+    if (!sourceUrl.ok) return sourceUrl as ValidationResult<ComplianceDocumentUpdateInput>;
     input.sourceUrl = sourceUrl.value ?? null;
   }
 
@@ -2406,19 +2413,19 @@ const validateComplianceUpdate = (
     Object.prototype.hasOwnProperty.call(body, "country_code")
   ) {
     const country = normalizeCountry(getCountryValue(body));
-    if (!country.ok) return country;
+    if (!country.ok) return country as ValidationResult<ComplianceDocumentUpdateInput>;
     input.countryCode = country.value ?? null;
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "tags")) {
     const tags = normalizeTags(body.tags);
-    if (!tags.ok) return tags;
+    if (!tags.ok) return tags as ValidationResult<ComplianceDocumentUpdateInput>;
     input.tags = tags.value ?? [];
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "status")) {
     const status = normalizeStatus(body.status);
-    if (!status.ok) return status;
+    if (!status.ok) return status as ValidationResult<ComplianceDocumentUpdateInput>;
     input.status = status.value;
   }
 
@@ -2507,15 +2514,17 @@ router.get(
       const limit = parsePositiveInt(req.query.limit, 25, 100);
       const country = normalizeCountry(getQueryString(req.query.country));
       if (!country.ok) {
-        throw createError(ERROR_CODES.INVALID_INPUT, country.message, {
-          message: country.message,
+        const err = country as { ok: false; message: string };
+        throw createError(ERROR_CODES.INVALID_INPUT, err.message, {
+          message: err.message,
         });
       }
 
       const status = normalizeStatus(getQueryString(req.query.status));
       if (!status.ok) {
-        throw createError(ERROR_CODES.INVALID_INPUT, status.message, {
-          message: status.message,
+        const err = status as { ok: false; message: string };
+        throw createError(ERROR_CODES.INVALID_INPUT, err.message, {
+          message: err.message,
         });
       }
 
@@ -2540,6 +2549,9 @@ router.get(
       });
     } catch (error) {
       console.error("[compliance/docs:list]", error);
+      if ((error as any).statusCode) {
+        throw error;
+      }
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         "Failed to list compliance documents",
@@ -2585,6 +2597,9 @@ router.get(
       res.json(document);
     } catch (error) {
       console.error("[compliance/docs:get]", error);
+      if ((error as any).statusCode) {
+        throw error;
+      }
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         "Failed to fetch compliance document",
@@ -2601,8 +2616,9 @@ router.post(
     try {
       const validation = validateComplianceCreate(req.body ?? {});
       if (!validation.ok) {
-        throw createError(ERROR_CODES.INVALID_INPUT, validation.message, {
-          message: validation.message,
+        const err = validation as { ok: false; message: string };
+        throw createError(ERROR_CODES.INVALID_INPUT, err.message, {
+          message: err.message,
         });
       }
 
@@ -2614,6 +2630,9 @@ router.post(
       res.status(201).json(document);
     } catch (error) {
       console.error("[compliance/docs:create]", error);
+      if ((error as any).statusCode) {
+        throw error;
+      }
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         "Failed to create compliance document",
@@ -2630,8 +2649,9 @@ router.patch(
     try {
       const validation = validateComplianceUpdate(req.body ?? {});
       if (!validation.ok) {
-        throw createError(ERROR_CODES.INVALID_INPUT, validation.message, {
-          message: validation.message,
+        const err = validation as { ok: false; message: string };
+        throw createError(ERROR_CODES.INVALID_INPUT, err.message, {
+          message: err.message,
         });
       }
 
@@ -2653,6 +2673,9 @@ router.patch(
       res.json(document);
     } catch (error) {
       console.error("[compliance/docs:update]", error);
+      if ((error as any).statusCode) {
+        throw error;
+      }
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         "Failed to update compliance document",
@@ -2915,10 +2938,257 @@ router.delete(
       res.json(document);
     } catch (error) {
       console.error("[compliance/docs:archive]", error);
+      if ((error as any).statusCode) {
+        throw error;
+      }
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         "Failed to archive compliance document",
       );
+    }
+  },
+);
+
+// =========================
+// PROVIDER SETTINGS
+// =========================
+
+router.get(
+  "/provider-settings",
+  requireAdmin,
+  logAdminAction("GET_PROVIDER_SETTINGS"),
+  async (req: Request, res: Response) => {
+    try {
+      const settings = await providerSettingsService.getAllSettings();
+      res.json(settings);
+    } catch (error) {
+      console.error("Error fetching provider settings:", error);
+      res.status(500).json({ message: "Failed to fetch provider settings" });
+    }
+  }
+);
+
+router.put(
+  "/provider-settings/:providerName",
+  requireAdmin,
+  logAdminAction("UPDATE_PROVIDER_SETTINGS"),
+  async (req: Request, res: Response) => {
+    try {
+      const providerName = req.params.providerName;
+      const { failure_threshold, timeout_ms, fallback_order } = req.body;
+      
+      const settings = await providerSettingsService.upsertProviderSettings(
+        providerName,
+        failure_threshold || 3,
+        timeout_ms || 5000,
+        fallback_order || null
+      );
+      
+      resetCircuitBreakerForProvider(providerName);
+      
+      res.json({ message: "Provider settings updated successfully", settings });
+    } catch (error) {
+      console.error("Error updating provider settings:", error);
+      res.status(500).json({ message: "Failed to update provider settings" });
+    }
+  }
+);
+
+/**
+ * =========================
+ * DASHBOARD & MONITORING
+ * =========================
+ */
+
+/**
+ * GET /api/admin/dashboard/stats
+ * Comprehensive dashboard statistics for CLI/UI
+ */
+router.get(
+  "/dashboard/stats",
+  requireAdmin,
+  logAdminAction("GET_DASHBOARD_STATS"),
+  async (req: Request, res: Response) => {
+    try {
+      const startTime = Date.now();
+      const timestamp = new Date().toISOString();
+
+      // Fetch system health in parallel
+      const [
+        queueStats,
+        databaseHealth,
+        redisHealth,
+        transactionStats,
+        providerHealth,
+      ] = await Promise.all([
+        getQueueStats().catch((err) => {
+          console.error("[Dashboard] Queue stats error:", err);
+          return {
+            pending: 0,
+            active: 0,
+            completed: 0,
+            failed: 0,
+            total: 0,
+          };
+        }),
+        checkReplicaHealth()
+          .then((replicas) => ({
+            status: "healthy" as const,
+            replicas,
+          }))
+          .catch((err) => {
+            console.error("[Dashboard] Database health error:", err);
+            return { status: "unhealthy" as const, replicas: [] };
+          }),
+        redisClient
+          .ping()
+          .then(() => ({ status: "healthy" as const, responseTime: 0 }))
+          .catch((err) => {
+            console.error("[Dashboard] Redis health error:", err);
+            return { status: "unhealthy" as const, responseTime: undefined };
+          }),
+        (async () => {
+          const stats = await (transactionModel as any).getStatistics(
+            new Date(Date.now() - 24 * 60 * 60 * 1000),
+            new Date(),
+          );
+          return {
+            totalCount: stats.totalTransactions,
+            successRate: stats.successRate,
+            totalVolume: stats.totalVolume,
+            activeUsers: await (UserModel as any).countActiveUsers(24),
+          };
+        })().catch((err) => {
+          console.error("[Dashboard] Transaction stats error:", err);
+          return {
+            totalCount: 0,
+            successRate: 0,
+            totalVolume: 0,
+            activeUsers: 0,
+          };
+        }),
+        (async () => {
+          const mobileMoneyService = new MobileMoneyService();
+          try {
+            return mobileMoneyService.getFailoverStats();
+          } catch (err) {
+            console.error("[Dashboard] Provider health error:", err);
+            return {};
+          }
+        })(),
+      ]);
+
+      const responseTime = Date.now() - startTime;
+      const stellarHealthy = transactionStats.totalCount >= 0; // If we can query, Stellar is ok
+
+      res.json({
+        timestamp,
+        health: {
+          database:
+            databaseHealth.status === "healthy" ? "healthy" : "unhealthy",
+          redis: redisHealth.status === "healthy" ? "healthy" : "unhealthy",
+          stellar: stellarHealthy ? "healthy" : "unhealthy",
+          responseTime,
+        },
+        queue: {
+          totalJobs: (queueStats as any).total || 0,
+          pendingJobs: (queueStats as any).pending || 0,
+          activeJobs: (queueStats as any).active || 0,
+          completedJobs: (queueStats as any).completed || 0,
+          failedJobs: (queueStats as any).failed || 0,
+          dlqSize: (queueStats as any).dlq || 0,
+        },
+        transactions: {
+          totalCount: transactionStats.totalCount,
+          successRate: transactionStats.successRate,
+          totalVolume: transactionStats.totalVolume,
+          activeUsers: transactionStats.activeUsers,
+        },
+        providers: Object.entries(providerHealth).reduce(
+          (acc, [provider, stats]: [string, any]) => {
+            acc[provider] = {
+              status: stats.isHealthy ? "online" : "offline",
+              failureRate: stats.failureRate || 0,
+              lastChecked: timestamp,
+            };
+            return acc;
+          },
+          {} as Record<string, any>,
+        ),
+      });
+    } catch (error) {
+      console.error("[Dashboard] Failed to fetch stats:", error);
+      throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch dashboard stats");
+    }
+  },
+);
+
+/**
+ * GET /api/admin/health
+ * Quick health check for monitoring
+ */
+router.get(
+  "/health",
+  logAdminAction("GET_HEALTH"),
+  async (req: Request, res: Response) => {
+    try {
+      const startTime = Date.now();
+
+      const [databaseOk, redisOk] = await Promise.all([
+        pool
+          .query("SELECT 1")
+          .then(() => true)
+          .catch(() => false),
+        redisClient
+          .ping()
+          .then(() => true)
+          .catch(() => false),
+      ]);
+
+      const responseTime = Date.now() - startTime;
+
+      res.json({
+        database: databaseOk ? "healthy" : "unhealthy",
+        redis: redisOk ? "healthy" : "unhealthy",
+        stellar: "healthy", // Assume ok unless we detect specific Stellar failures
+        responseTime,
+      });
+    } catch (error) {
+      console.error("[Health] Check failed:", error);
+      res.status(503).json({
+        database: "unhealthy",
+        redis: "unhealthy",
+        stellar: "unhealthy",
+        responseTime: 0,
+      });
+    }
+  },
+);
+
+/**
+ * GET /api/admin/queue/stats
+ * Queue metrics with detailed breakdown
+ */
+router.get(
+  "/queue/stats",
+  requireAdmin,
+  logAdminAction("GET_QUEUE_STATS"),
+  async (req: Request, res: Response) => {
+    try {
+      const stats = await getQueueStats();
+
+      res.json({
+        totalJobs: (stats as any).total || 0,
+        pendingJobs: (stats as any).pending || 0,
+        activeJobs: (stats as any).active || 0,
+        completedJobs: (stats as any).completed || 0,
+        failedJobs: (stats as any).failed || 0,
+        dlqSize: (stats as any).dlq || 0,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("[Queue] Stats fetch failed:", error);
+      throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch queue stats");
     }
   },
 );

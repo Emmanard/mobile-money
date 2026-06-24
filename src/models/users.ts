@@ -7,6 +7,7 @@ export interface User {
   kycLevel: string;
   preferredLanguage?: string;
   email?: string;
+  displayName?: string | null;
   mcc?: string | null;
   two_factor_secret?: string | null;
   backup_codes?: string[] | null;
@@ -46,6 +47,7 @@ export class UserModel {
       kycLevel: row.kyc_level,
       preferredLanguage: row.preferred_language ?? row.language ?? undefined,
       email: decrypt(row.email) as string,
+      displayName: row.display_name ?? null,
       two_factor_secret: decrypt(row.two_factor_secret) ?? null,
       backup_codes: row.backup_codes ?? null,
       status: row.status,
@@ -66,6 +68,13 @@ export class UserModel {
   async updateEmail(id: string, email: string): Promise<void> {
     const encryptedEmail = encrypt(email);
     await queryWrite("UPDATE users SET email = $1 WHERE id = $2", [encryptedEmail, id]);
+  }
+
+  async updateDisplayName(id: string, displayName: string | null): Promise<void> {
+    await queryWrite(
+      "UPDATE users SET display_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+      [displayName, id],
+    );
   }
 
   async updateSensitiveData(
@@ -171,6 +180,7 @@ export class UserModel {
         kycLevel: row.kyc_level,
         preferredLanguage: row.preferred_language ?? row.language ?? undefined,
         email: decrypt(row.email) as string,
+        displayName: row.display_name ?? null,
         two_factor_secret: decrypt(row.two_factor_secret) ?? null,
         backup_codes: row.backup_codes ?? null,
         status: row.status,

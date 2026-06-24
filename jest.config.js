@@ -1,11 +1,14 @@
 module.exports = {
   preset: "ts-jest",
   testEnvironment: "node",
-  setupFiles: ["<rootDir>/tests/jest.setup.ts"],
+  setupFilesAfterEnv: ["<rootDir>/tests/jest.setup.ts"],
   roots: ["<rootDir>/src", "<rootDir>/tests"],
   testMatch: ["**/__tests__/**/*.ts", "**/?(*.)+(spec|test).ts"],
-  testPathIgnorePatterns: ["/node_modules/", "/tests/pact/"],
+  testPathIgnorePatterns: ["/node_modules/", "/tests/pact/", "/tests/e2e/"],
   testTimeout: 30000,
+  moduleNameMapper: {
+    "^(\\.\\.?\\/.+)\\.js$": "$1",
+  },
   transform: {
     "^.+\\.ts$": [
       "ts-jest",

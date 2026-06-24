@@ -9,16 +9,17 @@ FAILED=0
 # Build all contracts in the workspace
 echo "Building Soroban contracts..."
 cargo build --manifest-path "$CONTRACTS_DIR/Cargo.toml" \
-  --target wasm32-unknown-unknown --release 2>&1
+  --target wasm32v1-none --release 2>&1
 
-TARGET_DIR="$CONTRACTS_DIR/target/wasm32-unknown-unknown/release"
+TARGET_DIR="$CONTRACTS_DIR/target/wasm32v1-none/release"
 
 for WASM in "$TARGET_DIR"/*.wasm; do
   [ -f "$WASM" ] || { echo "No WASM files found in $TARGET_DIR"; exit 1; }
   NAME=$(basename "$WASM")
 
   # Validate WASM magic bytes
-  if ! head -c 4 "$WASM" | grep -qP "$WASM_MAGIC"; then
+  MAGIC=$(od -An -tx1 -N4 "$WASM" | tr -d '[:space:]')
+  if [ "$MAGIC" != "0061736d" ]; then
     echo "FAIL [$NAME]: invalid WASM magic bytes"
     FAILED=1
     continue

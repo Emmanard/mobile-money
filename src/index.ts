@@ -1,16 +1,16 @@
 // Initialize centralized configuration first
 import "./config/init";
-import "./config/init";
 
 import "./tracer";
 import path from "path";
 import express, { NextFunction, Request, Response } from "express";
 import { IncomingMessage, Server } from "http";
-// replaced express-rate-limit with our redis-backed middleware
 import compression from "compression";
 import dotenv from "dotenv";
+import helmet from "helmet";
+import * as Sentry from "@sentry/node";
+import { register } from "prom-client";
 import spdy from "spdy";
-import https from "https";
 import fs from "fs";
 import session from "express-session";
 import type { SessionOptions } from "express-session";
@@ -19,7 +19,6 @@ import {
   validateVersionMiddleware,
   VersionedRequest,
 } from "./middleware/apiVersion";
-import { getConfigValue } from "./config";
 import {
   bulkRoutesV1,
   disputeRoutesV1,
@@ -35,19 +34,12 @@ import { transactionDisputeRoutes, disputeRoutes } from "./routes/disputes";
 import { statsRoutes } from "./routes/stats";
 import { contactsRoutes } from "./routes/contacts";
 import { reportsRoutes } from "./routes/reports";
-import { statementsRoutes } from "./routes/statements";
 import feesRoutes from "./routes/fees";
-import stellarRoutes from "./routes/stellar";
-import htlcRoutes from "./routes/htlc";
 import { createKYCRoutes } from "./routes/kycRoutes";
-import { vaultRoutes } from "./routes/vaults";
 import { adminRoutes } from "./routes/admin";
 import kycTierUpgradeRoutes from "./routes/kycTierUpgradeRoutes";
-import { makerCheckerRoutes } from "./routes/makerChecker";
 import { userRoutes } from "./routes/users";
-import { auditRoutes } from "./routes/audit";
 import { createError, errorHandler } from "./middleware/errorHandler";
-import { accountingRoutes } from "./routes/accounting";
 import {
   connectRedis,
   disconnectRedis,
@@ -56,7 +48,6 @@ import {
   SESSION_TTL_SECONDS,
 } from "./config/redis";
 import { createOAuthRouter } from "./auth/oauth";
-import { applySecurityMiddleware } from "./config/express";
 import { pool } from "./config/database";
 import {
   globalTimeout,
@@ -66,6 +57,8 @@ import {
 import { requireAuth } from "./middleware/auth";
 import { responseTime } from "./middleware/responseTime";
 import { requestId } from "./middleware/requestId";
+import { readReplicaRoutingMiddleware } from "./middleware/readReplicaRouting";
+import { dbConnectionLeakDetector } from "./middleware/dbConnectionLeakDetector";
 import { i18nMiddleware } from "./utils/i18n";
 import { metricsMiddleware } from "./middleware/metrics";
 import { validateStellarNetwork, logStellarNetwork } from "./config/stellar";
@@ -74,7 +67,6 @@ import { HealthCheckResponse, ReadinessCheckResponse } from "./types/api";
 import { privacyRoutes } from "./routes/privacy";
 import { developerDashboardRoutes } from "./routes/developerDashboard";
 import { travelRuleRoutes } from "./routes/travelRule";
-import subscriptionsRoutes from "./routes/subscriptions";
 import mtnCallbacksRouter from "./routes/mtnCallbacks";
 import sep31Router from "./stellar/sep31";
 import sep24Router from "./stellar/sep24";
@@ -84,16 +76,21 @@ import { createSep10Router } from "./stellar/sep10";
 import { sep30Routes } from "./routes/sep30";
 import { createAdminSep10Router } from "./stellar/adminSep10";
 import tomlRouter from "./routes/toml";
-import feesRouter from "./routes/fees";
 import feeStrategiesRouter from "./routes/feeStrategies";
 import crossChainRouter from "./routes/crossChain";
+import stellarRouter from "./routes/stellar";
 import reconciliationRoutes from "./routes/reconciliation";
 import accountingReconciliationRoutes from "./routes/accountingReconciliation";
 import exchangeRateBufferRoutes from "./routes/exchangeRateBuffers";
 import adminAssetRoutes from "./routes/admin/assets";
 import settingsRoutes from "./routes/settings";
+import { statementsRoutes } from "./routes/statements";
+import { paymentLinkRoutes } from "./routes/paymentLinkRoutes.js";
+import providerStatusRouter from "./routes/providerStatus";
+import { startHeartbeatService, stopHeartbeatService } from "./services/heartbeatService";
+import { startStellarExporter } from "./services/stellarExporter";
 
-// 1. Import Sentry Middleware
+// Sentry Middleware
 import { initSentry, sentryBreadcrumbMiddleware } from "./middleware/sentry";
 import { WebSocketManager } from "./websocket";
 import { layeredCache } from "./services/layeredCache";
@@ -103,7 +100,7 @@ import { startApolloServer } from "./graphql/server";
 dotenv.config();
 
 if (process.env.SENTRY_DSN) {
-  initSentry(process.env.SENTRY_DSN);
+  initSentry(process.env.SENTRY_DSN, process.env.SENTRY_RELEASE);
 }
 
 validateStellarNetwork();
@@ -176,7 +173,9 @@ app.use(
 // app.use(rateLimitMiddleware);
 app.use(responseTime);
 app.use(requestId);
+app.use(readReplicaRoutingMiddleware);
 app.use(i18nMiddleware);
+app.use(dbConnectionLeakDetector);
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (isShuttingDown) {
@@ -377,13 +376,15 @@ app.use("/api/reports", reportsRoutes);
 app.use("/api/fees", feesRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/kyc", createKYCRoutes(pool));
-app.use("/api/fees", feesRouter);
 app.use("/api/fee-strategies", feeStrategiesRouter);
 app.use("/api/cross-chain", crossChainRouter);
+app.use("/api/stellar", stellarRouter);
 app.use("/api/reconciliation", reconciliationRoutes);
 app.use("/api/exchange-rate-buffers", exchangeRateBufferRoutes);
 app.use("/api/admin/assets", adminAssetRoutes);
 app.use("/api/settings", settingsRoutes);
+app.use("/api/statements", statementsRoutes);
+app.use("/", paymentLinkRoutes);
 
 // GDPR
 app.use("/api/gdpr", privacyRoutes);
@@ -397,6 +398,7 @@ app.use("/sep31", sep31Router);
 app.use("/sep24", sep24Router);
 app.use("/sep38", sep38Router);
 app.use("/sep12", createSep12Router(pool));
+app.use("/sep30", sep30Routes);
 app.use("/.well-known/stellar.toml", tomlRouter);
 
 // Prometheus Metrics Scraper Endpoint
@@ -495,7 +497,7 @@ async function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
     }
 
     console.log("[Shutdown] Draining queue resources");
-    const { shutdownQueue } = await import("./queue");
+    const { shutdownQueue } = await import("./queue/index.js");
     await shutdownQueue();
     console.log("[Shutdown] Queue resources closed");
 
@@ -535,7 +537,7 @@ async function initializeRuntime(): Promise<void> {
   }
 
   // Initialize background jobs and monitoring
-  const { startJobs } = await import("./jobs/scheduler");
+  const { startJobs } = await import("./jobs/scheduler.js");
   startJobs();
 
   // Initialize Prometheus Horizon Scraper
@@ -545,9 +547,9 @@ async function initializeRuntime(): Promise<void> {
   startHeartbeatService();
 
   const { getQueueHealth, pauseQueueEndpoint, resumeQueueEndpoint } =
-    await import("./queue/health");
+    await import("./queue/health.js");
   const { queueDepthHandler, queueDepthPrometheusHandler } =
-    await import("./queue/queueDepthMetrics");
+    await import("./queue/queueDepthMetrics.js");
 
   app.get("/health/queue", getQueueHealth);
   app.get("/health/queue/depth", queueDepthHandler);
@@ -562,11 +564,15 @@ async function initializeRuntime(): Promise<void> {
     await layeredCache.init();
     console.log("Layered cache (L1/L2) initialized");
 
+    const { providerSettingsService } = await import("./services/providerSettingsService.js");
+    await providerSettingsService.getAllSettings();
+    console.log("Provider settings cache initialized");
+
     const {
       startProviderBalanceAlertWorker,
       scheduleProviderBalanceAlertJob,
       startAccountingTokenRefreshWorker,
-    } = await import("./queue");
+    } = await import("./queue/index.js");
     startProviderBalanceAlertWorker();
     startAccountingTokenRefreshWorker();
     await scheduleProviderBalanceAlertJob();
@@ -576,11 +582,8 @@ async function initializeRuntime(): Promise<void> {
     console.warn("Distributed locks not available");
   }
 
-  const { createQueueDashboard } = await import("./queue/dashboard");
+  const { createQueueDashboard } = await import("./queue/dashboard.js");
   app.use("/admin/queues", createQueueDashboard());
-
-  // Start scheduled jobs
-  startJobs();
 
   //
   const useHTTP2 = process.env.USE_HTTP2 === "true";
@@ -597,11 +600,9 @@ async function initializeRuntime(): Promise<void> {
     });
     server = http2Server as unknown as Server;
   } else {
-    server = app.listen(PORT, () =>
-    // Start system heartbeat for Prometheus monitoring
-    startHeartbeat();
-      console.log(`HTTP/1.1 server running on http://localhost:${PORT}`),
-    );
+    server = app.listen(PORT, () => {
+      console.log(`HTTP/1.1 server running on http://localhost:${PORT}`);
+    });
 
     wsManager = new WebSocketManager(server);
     console.log("WebSocket server attached");

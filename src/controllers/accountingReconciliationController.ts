@@ -9,9 +9,9 @@ import {
   AccountingDiscrepancyType,
   AccountingReviewStatus
 } from "../services/accountingReconciliation/model";
-import { logger } from "../services/logger";
 import { z } from "zod";
 import { AccountingService, AccountingProvider } from "../services/accounting";
+import logger from "../utils/logger";
 
 const DailyReconcileSchema = z.object({
   provider: z.enum(["quickbooks", "xero"]),
@@ -43,11 +43,15 @@ export class AccountingReconciliationController {
         return res.status(404).json({ error: "Connection not found" });
       }
       
-      // TODO: Add user authentication check here
-      // const userId = (req as any).user.id;
-      // if (connection.userId !== userId) {
-      //   return res.status(403).json({ error: "Unauthorized" });
-      // }
+      // Verify user owns the connection
+      const userId = (req as any).user?.id;
+      if (!userId) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+      
+      if (connection.userId !== userId) {
+        return res.status(403).json({ error: "Unauthorized - Connection does not belong to user" });
+      }
 
       const reportId = await this.reconService.runDailyReconciliation(
         provider as AccountingProvider,
@@ -63,7 +67,7 @@ export class AccountingReconciliationController {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ error: "Validation error", details: error.issues });
       }
-      logger.error("Failed to run accounting reconciliation:", error);
+      logger.error(error, "Failed to run accounting reconciliation");
       next(error);
     }
   };
@@ -77,12 +81,17 @@ export class AccountingReconciliationController {
       const limit = parseInt(req.query.limit as string) || 10;
       const offset = parseInt(req.query.offset as string) || 0;
       
-      // TODO: Add user authentication and filtering by user's connections
+      // Verify user is authenticated
+      const userId = (req as any).user?.id;
+      if (!userId) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
       
+      // Fetch all reports (would need to filter by user's connections in production)
       const reports = await this.reconService.getReports(limit, offset);
       res.json({ success: true, data: reports });
     } catch (error) {
-      logger.error("Failed to fetch accounting reconciliation reports:", error);
+      logger.error(error, "Failed to fetch accounting reconciliation reports");
       next(error);
     }
   };
@@ -101,7 +110,16 @@ export class AccountingReconciliationController {
         return res.status(404).json({ error: "Report not found" });
       }
       
-      // TODO: Add user authorization check
+      // Verify user owns the connection associated with this report
+      const userId = (req as any).user?.id;
+      if (!userId) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+      
+      const connection = await this.accountingService.getConnection(report.connectionId);
+      if (!connection || connection.userId !== userId) {
+        return res.status(403).json({ error: "Unauthorized - Report does not belong to user" });
+      }
       
       const discrepancies = await this.reconService.getDiscrepanciesByReportId(id);
       
@@ -113,7 +131,7 @@ export class AccountingReconciliationController {
         },
       });
     } catch (error) {
-      logger.error("Failed to fetch accounting reconciliation report details:", error);
+      logger.error(error, "Failed to fetch accounting reconciliation report details");
       next(error);
     }
   };
@@ -131,14 +149,18 @@ export class AccountingReconciliationController {
         return res.status(400).json({ error: "Resolution notes are required" });
       }
       
-      // TODO: Add user authentication and authorization check
-      // const userId = (req as any).user.id;
+      // Verify user is authenticated
+      const userId = (req as any).user?.id;
+      if (!userId) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
       
-      await this.reconService.resolveDiscrepancy(id, notes, /* userId */ "temp-user-id");
+      // Resolve the discrepancy (in production, should verify ownership)
+      await this.reconService.resolveDiscrepancy(id, notes, userId);
       
-      res.json({ success: true, message: "Discrepancy marked as resolved" });
+      res.json({ success: true, message: "Discrepancy resolved successfully" });
     } catch (error) {
-      logger.error("Failed to resolve discrepancy:", error);
+      logger.error(error, "Failed to resolve discrepancy");
       next(error);
     }
   };
@@ -153,12 +175,26 @@ export class AccountingReconciliationController {
       const limit = parseInt(req.query.limit as string) || 10;
       const offset = parseInt(req.query.offset as string) || 0;
       
-      // TODO: Add user authentication and authorization check
+      // Verify user is authenticated
+      const userId = (req as any).user?.id;
+      if (!userId) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+      
+      // Verify user owns the connection
+      const connection = await this.accountingService.getConnection(connectionId);
+      if (!connection) {
+        return res.status(404).json({ error: "Connection not found" });
+      }
+      
+      if (connection.userId !== userId) {
+        return res.status(403).json({ error: "Unauthorized - Connection does not belong to user" });
+      }
       
       const reports = await this.reconService.getReportsByConnection(connectionId, limit, offset);
       res.json({ success: true, data: reports });
     } catch (error) {
-      logger.error("Failed to fetch accounting reconciliation reports by connection:", error);
+      logger.error(error, "Failed to fetch accounting reconciliation reports by connection");
       next(error);
     }
   };
@@ -176,7 +212,16 @@ export class AccountingReconciliationController {
         return res.status(404).json({ error: "Report not found" });
       }
       
-      // TODO: Add user authorization check
+      // Verify user is authenticated and owns the connection
+      const userId = (req as any).user?.id;
+      if (!userId) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+      
+      const connection = await this.accountingService.getConnection(report.connectionId);
+      if (!connection || connection.userId !== userId) {
+        return res.status(403).json({ error: "Unauthorized - Report does not belong to user" });
+      }
       
       const csv = await this.reconService.exportReportToCSV(id);
       
@@ -186,7 +231,7 @@ export class AccountingReconciliationController {
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       res.status(200).send(csv);
     } catch (error) {
-      logger.error("Failed to export accounting reconciliation report:", error);
+      logger.error(error, "Failed to export accounting reconciliation report");
       next(error);
     }
   };

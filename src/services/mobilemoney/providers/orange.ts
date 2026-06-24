@@ -1,6 +1,5 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from "axios";
-import * as fs from "fs";
-import * as path from "path";
+
 import logger from "../../../utils/logger";
 import { maskPII } from "../../../utils/masking";
 import { Browser, BrowserContext, Page, chromium } from "playwright";
@@ -91,6 +90,9 @@ export class OrangeProvider {
   private sessionPromise: Promise<OrangeSessionState> | null = null;
   private apiToken: string | null = null;
   private apiTokenExpiry = 0;
+  private directAuthPromise: Promise<string> | null = null;
+  private prefetchTimer: NodeJS.Timeout | null = null;
+  private destroyed = false;
 
   constructor(options: OrangeProviderOptions = {}) {
     this.clock = options.clock ?? Date.now;
@@ -522,49 +524,107 @@ export class OrangeProvider {
     throw lastError ?? new Error("Orange direct API request failed");
   }
 
-  private async authenticateDirect(): Promise<string> {
-    if (this.apiToken && this.clock() < this.apiTokenExpiry) {
+  private async authenticateDirect(forceRefresh = false): Promise<string> {
+    const now = this.clock();
+    if (!forceRefresh && this.apiToken && now < this.apiTokenExpiry - this.config.refreshSkewMs) {
       return this.apiToken;
     }
 
-    if (this.config.mode === "direct") {
-      this.assertDirectConfig();
+    if (this.directAuthPromise) {
+      return this.directAuthPromise;
     }
 
-    const authHeader =
-      "Basic " +
-      Buffer.from(`${this.config.apiKey}:${this.config.apiSecret}`).toString(
-        "base64",
-      );
-    const response = await this.sendRequest(this.directClient, {
-      method: "POST",
-      url: this.config.directAuthPath,
-      headers: {
-        Authorization: authHeader,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      data: "grant_type=client_credentials",
-    });
+    this.directAuthPromise = (async () => {
+      try {
+        if (this.config.mode === "direct") {
+          this.assertDirectConfig();
+        }
 
-    if (response.status < 200 || response.status >= 300) {
-      throw new Error(
-        `Orange direct auth failed with status ${response.status}`,
-      );
+        const authHeader =
+          "Basic " +
+          Buffer.from(`${this.config.apiKey}:${this.config.apiSecret}`).toString(
+            "base64",
+          );
+        const response = await this.sendRequest(this.directClient, {
+          method: "POST",
+          url: this.config.directAuthPath,
+          headers: {
+            Authorization: authHeader,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          data: "grant_type=client_credentials",
+        });
+
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(
+            `Orange direct auth failed with status ${response.status}`,
+          );
+        }
+
+        const data = response.data as {
+          access_token?: string;
+          expires_in?: number;
+        };
+        if (!data.access_token) {
+          throw new Error("Orange direct auth did not return access_token");
+        }
+
+        this.apiToken = data.access_token;
+        const expires_in = data.expires_in ?? 3600;
+        this.apiTokenExpiry = now + expires_in * 1000;
+
+        this.startPrefetchDaemon(expires_in * 1000);
+
+        return this.apiToken;
+      } finally {
+        this.directAuthPromise = null;
+      }
+    })();
+
+    return this.directAuthPromise;
+  }
+
+  private startPrefetchDaemon(ttlMs: number, isRetry = false): void {
+    if (this.destroyed) {
+      return;
     }
 
-    const data = response.data as {
-      access_token?: string;
-      expires_in?: number;
-    };
-    if (!data.access_token) {
-      throw new Error("Orange direct auth did not return access_token");
+    if (this.prefetchTimer) {
+      clearTimeout(this.prefetchTimer);
+      this.prefetchTimer = null;
     }
 
-    this.apiToken = data.access_token;
-    this.apiTokenExpiry =
-      this.clock() + (data.expires_in ?? 3600) * 1000 - 5000;
+    const refreshDelay = isRetry
+      ? ttlMs
+      : Math.max(1000, ttlMs - this.config.refreshSkewMs);
 
-    return this.apiToken;
+    this.prefetchTimer = setTimeout(async () => {
+      if (this.destroyed) {
+        return;
+      }
+      try {
+        logger.info("Orange: Proactively pre-fetching direct auth token");
+        await this.authenticateDirect(true);
+      } catch (error: any) {
+        if (this.destroyed) {
+          return;
+        }
+        logger.error({ error: error.message }, "Orange: Failed to pre-fetch direct auth token");
+        this.startPrefetchDaemon(5000, true);
+      }
+    }, refreshDelay);
+
+    if (this.prefetchTimer && typeof this.prefetchTimer.unref === "function") {
+      this.prefetchTimer.unref();
+    }
+  }
+
+  destroy(): void {
+    this.destroyed = true;
+    if (this.prefetchTimer) {
+      clearTimeout(this.prefetchTimer);
+      this.prefetchTimer = null;
+    }
   }
 
   private async requestWithSession(
@@ -855,38 +915,18 @@ export class OrangeProvider {
   }
 
   private loadSession(): OrangeSessionState | null {
-    if (!this.config.sessionStorePath) {
-      return null;
-    }
-
-    try {
-      if (!fs.existsSync(this.config.sessionStorePath)) {
-        return null;
-      }
-
-      const raw = fs.readFileSync(this.config.sessionStorePath, "utf8");
-      const parsed = JSON.parse(raw) as OrangeSessionState;
-
-      if (!parsed.cookies || !parsed.expiresAt || this.isExpired(parsed)) {
-        return null;
-      }
-
-      return parsed;
-    } catch {
-      return null;
-    }
+    // Session tokens must not be read from the local filesystem.
+    // The in-memory this.session is the authoritative cache; a fresh
+    // login will be performed when it is absent or expired.
+    return null;
   }
 
-  private persistSession(session: OrangeSessionState): void {
-    if (!this.config.sessionStorePath) {
-      return;
-    }
-
-    const dir = path.dirname(this.config.sessionStorePath);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(this.config.sessionStorePath, JSON.stringify(session), {
-      mode: 0o600,
-    });
+  private persistSession(_session: OrangeSessionState): void {
+    // Session tokens contain sensitive authentication credentials.
+    // Writing them to the local filesystem (sessionStorePath) would create
+    // unencrypted secrets on disk, violating the memory-only security policy.
+    // The session is already held in memory via this.session; for cross-process
+    // persistence use an encrypted store such as Redis instead.
   }
 
   private serializeCookies(session: OrangeSessionState): string {

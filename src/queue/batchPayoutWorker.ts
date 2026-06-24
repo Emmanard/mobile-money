@@ -46,6 +46,7 @@ async function sendTransactionEmail(transactionId: string): Promise<void> {
       user.email,
       transaction,
       user.preferredLanguage,
+      user.displayName,
     );
   }
 }
@@ -61,6 +62,7 @@ async function sendFailureEmail(transactionId: string, reason: string): Promise<
       transaction,
       reason,
       user.preferredLanguage,
+      user.displayName,
     );
   }
 }

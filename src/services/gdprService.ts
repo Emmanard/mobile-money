@@ -1,37 +1,19 @@
 import crypto from "node:crypto";
-import { promises as fs } from "node:fs";
+import { PassThrough } from "node:stream";
+import archiver from "archiver";
 import { DeleteObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
-import { getS3Client, s3Config } from "../config/s3";
-
-  async deleteUserS3Objects(userId: string) {
-    const s3 = getS3Client();
-    const prefix = `${userId}/`;
-    try {
-      const listResult = await s3.send(new ListObjectsV2Command({ Bucket: s3Config.bucket, Prefix: prefix }));
-      const objects = listResult.Contents || [];
-      for (const obj of objects) {
-        if (obj.Key) {
-          await s3.send(new DeleteObjectCommand({ Bucket: s3Config.bucket, Key: obj.Key }));
-        }
-      }
-    } catch (err) {
-      console.error("S3 deletion error for user", userId, err);
-    }
-  }
-import path from "node:path";
 import { v4 as uuid } from "uuid";
 import { Transaction, TransactionModel } from "../models/transaction";
-import { createZipFile } from "../utils/create-zip-file";
 import { logAuditEvent } from "../utils/log-audit-event";
 import { AuditLog, auditService } from "./auditlogService";
-import { TransactionService } from "./transanctionService";
-
+import { TransactionService } from "./transactionService";
 import {
   deactivateUserAccount,
   getUserById,
   updateUserById,
   User,
 } from "./userService";
+import { getS3Client, s3Config } from "../config/s3";
 import { pool } from "../config/database";
 
 export class GDPRService {
@@ -41,41 +23,40 @@ export class GDPRService {
     this.txService = new TransactionService(new TransactionModel());
   }
 
-  async exportUserData(userId: string) {
-    const tempDir = path.join("/temp", `export-${uuid}`);
-    await fs.mkdir(tempDir, { recursive: true });
+  /**
+   * Export user data as an in-memory ZIP buffer.
+   *
+   * Security: No files are written to the local filesystem at any point.
+   * All data passes through memory-buffered streams only before being
+   * returned to the caller for direct HTTP streaming — satisfying the
+   * requirement to keep sensitive data out of local disk storage.
+   */
+  async exportUserData(userId: string): Promise<Buffer> {
+    const user = await getUserById(userId);
+    const txs = await this.txService.findByUserId(userId);
 
-    try {
-      const user = await getUserById(userId);
-      const txs = await this.txService.findByUserId(userId);
-      // const auditLogs = await getAuditLogs(userId); // Only if there is a user log tray
+    return new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const passthrough = new PassThrough();
 
-      // Creat JSON files
-      await fs.writeFile(
-        path.join(tempDir, "profile.json"),
-        JSON.stringify(user, null, 2),
-      );
-      await fs.writeFile(
-        path.join(tempDir, "transactions.json"),
-        JSON.stringify(txs, null, 2),
-      );
-      // await fs.writeFile(path.join(tempDir, 'transactions.json'), JSON.stringify(auditLogs, null, 2));
+      passthrough.on("data", (chunk: Buffer) => chunks.push(chunk));
+      passthrough.on("end", () => resolve(Buffer.concat(chunks)));
+      passthrough.on("error", reject);
 
-      // Create zip file
-      const zipPath = path.join(
-        "/temp",
-        `gdpr-export-${userId}-${Date.now()}.zip`,
-      );
-      await createZipFile(tempDir, zipPath);
+      const archive = archiver("zip", { zlib: { level: 9 } });
+      archive.on("error", reject);
+      archive.pipe(passthrough);
 
-      // Cleanup
-      await fs.rm(tempDir, { recursive: true });
+      // Append each export file directly as in-memory buffers — no disk I/O.
+      archive.append(Buffer.from(JSON.stringify(user, null, 2), "utf8"), {
+        name: "profile.json",
+      });
+      archive.append(Buffer.from(JSON.stringify(txs, null, 2), "utf8"), {
+        name: "transactions.json",
+      });
 
-      return zipPath;
-    } catch (err) {
-      await fs.rm(tempDir, { recursive: true }).catch(() => {});
-      throw err;
-    }
+      archive.finalize();
+    });
   }
 
   private hashString(str: string) {
@@ -89,9 +70,15 @@ export class GDPRService {
   anonymizeTransaction(tx: Transaction) {
     return {
       ...tx,
-      phoneNumber: tx.phoneNumber ? this.hashString(tx.phoneNumber) : tx.phoneNumber,
-      idempotencyKey: tx.idempotencyKey ? this.hashString(String(tx.idempotencyKey)) : tx.idempotencyKey,
-      stellarAddress: tx.stellarAddress ? this.hashString(tx.stellarAddress) : tx.stellarAddress,
+      phoneNumber: tx.phoneNumber
+        ? this.hashString(tx.phoneNumber)
+        : tx.phoneNumber,
+      idempotencyKey: tx.idempotencyKey
+        ? this.hashString(String(tx.idempotencyKey))
+        : tx.idempotencyKey,
+      stellarAddress: tx.stellarAddress
+        ? this.hashString(tx.stellarAddress)
+        : tx.stellarAddress,
     };
   }
 
@@ -119,7 +106,12 @@ export class GDPRService {
         const anonymizedTx = this.anonymizeTransaction(tx);
         await pool.query(
           `UPDATE transactions SET phone_number = $1, idempotency_key = $2, stellar_address = $3 WHERE id = $4`,
-          [anonymizedTx.phoneNumber, anonymizedTx.idempotencyKey, anonymizedTx.stellarAddress, tx.id]
+          [
+            anonymizedTx.phoneNumber,
+            anonymizedTx.idempotencyKey,
+            anonymizedTx.stellarAddress,
+            tx.id,
+          ],
         );
       }
 
@@ -135,23 +127,22 @@ export class GDPRService {
 
       await updateUserById(userId, anonymizedUser);
 
-      // Purge PII from audit logs - this uses MOCK at the moment
-
+      // Purge PII from audit logs
       const auditLogs = await auditService.fetchAuditLogs(userId);
       for (const log of auditLogs) {
         const anonymizedLog: AuditLog = {
           ...log,
           action: this.hashString(log.action),
         };
-
         await auditService.updateAuditLog(anonymizedLog);
       }
 
       // Log erasure event
       await logAuditEvent(userId, "RIGHT_TO_BE_FORGOTTEN_EXECUTED");
-await this.deleteUserS3Objects(userId);
-await this.deleteUserAttachments(userId);
-      // Disable/deactivate user accout
+      await this.deleteUserS3Objects(userId);
+      await this.deleteUserAttachments(userId);
+
+      // Disable/deactivate user account
       await this.deactivateUserAccount(userId);
     } catch (err) {
       console.error("Erasure error:", err);
@@ -164,7 +155,9 @@ await this.deleteUserAttachments(userId);
    * Runs on a schedule (e.g., cron job) to ensure GDPR compliance.
    * @param retentionYears The legally required retention period (default 7 years)
    */
-  async enforceDataRetentionPolicy(retentionYears: number = 7): Promise<{ usersPurged: number, transactionsAnonymized: number }> {
+  async enforceDataRetentionPolicy(
+    retentionYears: number = 7,
+  ): Promise<{ usersPurged: number; transactionsAnonymized: number }> {
     const cutoffDate = new Date();
     cutoffDate.setFullYear(cutoffDate.getFullYear() - retentionYears);
 
@@ -174,13 +167,13 @@ await this.deleteUserAttachments(userId);
     // 1. Identify and purge deactivated users older than retention period
     const deactivatedUsers = await pool.query(
       `SELECT id, phone_number FROM users WHERE is_active = false AND deactivated_at < $1`,
-      [cutoffDate]
+      [cutoffDate],
     );
 
     for (const row of deactivatedUsers.rows) {
-      const phone = row.phone_number ? String(row.phone_number) : '';
-      if (phone.length === 16 && !phone.includes('+')) continue; // Already anonymized
-      
+      const phone = row.phone_number ? String(row.phone_number) : "";
+      if (phone.length === 16 && !phone.includes("+")) continue; // Already anonymized
+
       try {
         await this.purgeUserData(row.id);
         usersPurged++;
@@ -192,32 +185,35 @@ await this.deleteUserAttachments(userId);
     // 2. Identify and anonymize old standalone transactions
     const oldTransactions = await pool.query(
       `SELECT id, phone_number FROM transactions WHERE created_at < $1`,
-      [cutoffDate]
+      [cutoffDate],
     );
 
     for (const row of oldTransactions.rows) {
-      const phone = row.phone_number ? String(row.phone_number) : '';
-      if (phone.length === 16 && !phone.includes('+')) continue; // Already anonymized
+      const phone = row.phone_number ? String(row.phone_number) : "";
+      if (phone.length === 16 && !phone.includes("+")) continue; // Already anonymized
 
       try {
         const hashedPhone = phone ? this.anonymizePhoneNumber(phone) : null;
         const hashedIdempotency = this.hashString(row.id);
-        const hashedStellar = this.hashString('purged_stellar_address');
+        const hashedStellar = this.hashString("purged_stellar_address");
 
         await pool.query(
           `UPDATE transactions SET phone_number = $1, stellar_address = $2, idempotency_key = $3 WHERE id = $4`,
-          [hashedPhone, hashedStellar, hashedIdempotency, row.id]
+          [hashedPhone, hashedStellar, hashedIdempotency, row.id],
         );
         transactionsAnonymized++;
       } catch (err) {
-        console.error(`[GDPR] Failed to anonymize expired transaction ${row.id}:`, err);
+        console.error(
+          `[GDPR] Failed to anonymize expired transaction ${row.id}:`,
+          err,
+        );
       }
     }
 
     if (usersPurged > 0 || transactionsAnonymized > 0) {
       await logAuditEvent(
-        'SYSTEM',
-        `DATA_RETENTION_POLICY_EXECUTED: Purged ${usersPurged} users and ${transactionsAnonymized} transactions older than ${retentionYears} years.`
+        "SYSTEM",
+        `DATA_RETENTION_POLICY_EXECUTED: Purged ${usersPurged} users and ${transactionsAnonymized} transactions older than ${retentionYears} years.`,
       );
     }
 
@@ -226,7 +222,27 @@ await this.deleteUserAttachments(userId);
 
   private async deactivateUserAccount(userId: string) {
     await deactivateUserAccount(userId);
+  }
+
+  private async deleteUserS3Objects(userId: string) {
+    const s3 = getS3Client();
+    const prefix = `${userId}/`;
+    try {
+      const listResult = await s3.send(
+        new ListObjectsV2Command({ Bucket: s3Config.bucket, Prefix: prefix }),
+      );
+      const objects = listResult.Contents || [];
+      for (const obj of objects) {
+        if (obj.Key) {
+          await s3.send(
+            new DeleteObjectCommand({ Bucket: s3Config.bucket, Key: obj.Key }),
+          );
+        }
+      }
+    } catch (err) {
+      console.error("S3 deletion error for user", userId, err);
     }
+  }
 
   private async deleteUserAttachments(userId: string) {
     const s3 = getS3Client();
@@ -239,10 +255,16 @@ await this.deleteUserAttachments(userId);
         ContinuationToken: continuationToken,
       });
       const result = await s3.send(listCmd);
-      const objects = result.Contents?.filter((obj) => obj.Key?.includes(`/${userId}/`)) ?? [];
+      const objects =
+        result.Contents?.filter((obj) =>
+          obj.Key?.includes(`/${userId}/`),
+        ) ?? [];
       for (const obj of objects) {
         if (obj.Key) {
-          const delCmd = new DeleteObjectCommand({ Bucket: s3Config.bucket, Key: obj.Key });
+          const delCmd = new DeleteObjectCommand({
+            Bucket: s3Config.bucket,
+            Key: obj.Key,
+          });
           await s3.send(delCmd);
         }
       }

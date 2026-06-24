@@ -137,7 +137,7 @@ export async function getTransactionResolutionPercentiles(
     };
 
     // Cache the result
-    await redisClient.setex(
+    await redisClient.setEx(
       CACHE_KEYS.TRANSACTION_METRICS,
       CACHE_TTL_SECONDS,
       JSON.stringify(metrics),
@@ -196,7 +196,7 @@ export async function getTransactionResolutionTrends(
     }));
 
     // Cache the result
-    await redisClient.setex(
+    await redisClient.setEx(
       CACHE_KEYS.TRANSACTION_TREND,
       CACHE_TTL_SECONDS,
       JSON.stringify(trends),
@@ -278,7 +278,7 @@ export async function getDisputeResolutionPercentiles(
     };
 
     // Cache the result
-    await redisClient.setex(
+    await redisClient.setEx(
       CACHE_KEYS.DISPUTE_METRICS,
       CACHE_TTL_SECONDS,
       JSON.stringify(metrics),
@@ -337,7 +337,7 @@ export async function getDisputeResolutionTrends(
     }));
 
     // Cache the result
-    await redisClient.setex(
+    await redisClient.setEx(
       CACHE_KEYS.DISPUTE_TREND,
       CACHE_TTL_SECONDS,
       JSON.stringify(trends),

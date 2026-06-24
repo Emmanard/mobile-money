@@ -1,12 +1,11 @@
 # Dependencies
 node_modules/
-package-lock.json
-yarn.lock
 
 # Build outputs
 dist/
 contracts/target/
 *.tsbuildinfo
+.docusaurus/
 
 # Kotlin SDK build artifacts
 sdk/build/

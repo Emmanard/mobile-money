@@ -1,8 +1,10 @@
 import { Request, Response, Router } from "express";
+import { z } from "zod";
 import { requireAuth } from "../middleware/auth";
 import { optimizeProfileImage, upload } from "../middleware/upload";
 import { uploadToS3 } from "../services/s3Upload";
 import { pool } from "../config/database";
+import { UserModel } from "../models/users";
 import {
   getWithdrawal2FASettings,
   updateMandatory2FAWithdrawals,
@@ -12,6 +14,15 @@ import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
 
 const router = Router();
+const userModel = new UserModel();
+
+const updateDisplayNameSchema = z.object({
+  displayName: z
+    .string()
+    .trim()
+    .min(1, "displayName is required")
+    .max(120, "displayName must be 120 characters or fewer"),
+});
 
 router.post(
   "/profile-picture",
@@ -64,6 +75,40 @@ router.post(
           error: "Internal server error during upload",
         },
       );
+    }
+  },
+);
+
+router.put(
+  "/profile/display-name",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const user = req.user;
+      if (!user || user.role !== "merchant") {
+        throw createError(ERROR_CODES.FORBIDDEN, "Only merchants can set a display name", {
+          error: "Only merchants can set a display name",
+        });
+      }
+
+      const parsed = updateDisplayNameSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw createError(ERROR_CODES.INVALID_INPUT, "Validation failed", {
+          error: "Validation failed",
+          details: parsed.error.issues,
+        });
+      }
+
+      const userId = user.id;
+      await userModel.updateDisplayName(userId, parsed.data.displayName);
+
+      return res.status(200).json({
+        message: "Merchant display name updated successfully",
+        data: { displayName: parsed.data.displayName },
+      });
+    } catch (error) {
+      console.error("Controller display-name update error:", error);
+      throw error;
     }
   },
 );

@@ -210,6 +210,10 @@ export const createKYCRoutes = (db: Pool): Router => {
     } catch (error) {
       console.error("Document upload error:", error);
 
+      if ((error as any).statusCode) {
+        throw error;
+      }
+
       // Handle multer errors
       if (error instanceof Error) {
         if (error.message.includes("File too large")) {
@@ -272,6 +276,9 @@ export const createKYCRoutes = (db: Pool): Router => {
       });
     } catch (error) {
       console.error("Get documents error:", error);
+      if ((error as any).statusCode) {
+        throw error;
+      }
       throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to retrieve documents", {
         message: error instanceof Error ? error.message : "Unknown error",
       });

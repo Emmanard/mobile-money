@@ -1,5 +1,4 @@
 import { Request, Response } from "express";
-import fs from "node:fs/promises";
 import { GDPRService } from "../services/gdprService";
 import { logAuditEvent } from "../utils/log-audit-event";
 import { ERROR_CODES } from "../constants/errorCodes";
@@ -17,14 +16,16 @@ const privacyController = {
       // keep for audit purpose
       await logAuditEvent(userId, DATA_EXPORT_REQUIRED);
 
-      const zipPath = await gdprService.exportUserData(userId);
+      // exportUserData returns an in-memory ZIP buffer — no temp file on disk.
+      const zipBuffer = await gdprService.exportUserData(userId);
 
-      res.download(zipPath, `gdpr-export-${userId}.zip`, async (err) => {
-        if (err) {
-          console.log("Download failed", err);
-        }
-        await fs.unlink(zipPath).catch(() => {});
-      });
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="gdpr-export-${userId}.zip"`,
+      );
+      res.setHeader("Content-Length", zipBuffer.length);
+      res.send(zipBuffer);
     } catch (err) {
       console.error("Export error: ", err);
       throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to export data.");

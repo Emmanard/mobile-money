@@ -72,10 +72,10 @@ describe("UserModel PII Encryption and RBAC Access", () => {
     }
 
     const merchantResult = await pool.query(
-      `INSERT INTO users (phone_number, kyc_level, role_id, mcc)
-         VALUES ($1, $2, $3, $4)
+      `INSERT INTO users (phone_number, kyc_level, role_id, mcc, display_name)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
-      ["+19998887778", "basic", merchantRoleId, "5411"],
+      ["+19998887778", "basic", merchantRoleId, "5411", "Coffee Shop"],
     );
 
     const merchantId = merchantResult.rows[0].id;
@@ -83,6 +83,7 @@ describe("UserModel PII Encryption and RBAC Access", () => {
 
     expect(merchant).toBeDefined();
     expect(merchant?.mcc).toBe("5411");
+    expect(merchant?.displayName).toBe("Coffee Shop");
 
     await pool.query("DELETE FROM users WHERE id = $1", [merchantId]);
   });

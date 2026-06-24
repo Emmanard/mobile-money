@@ -73,6 +73,12 @@
                 },
                 {
                   "u64": "1000"
+                },
+                {
+                  "vec": []
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -228,6 +234,14 @@
                           },
                           {
                             "key": {
+                              "symbol": "approved_signers"
+                            },
+                            "val": {
+                              "vec": []
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "claimed"
                             },
                             "val": {
@@ -256,6 +270,14 @@
                             },
                             "val": {
                               "bool": true
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "required_signatures"
+                            },
+                            "val": {
+                              "u32": 0
                             }
                           },
                           {

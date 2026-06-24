@@ -30,9 +30,13 @@ jest.mock("../../services/xeroOauthState", () => ({
   }),
 }));
 
-// requireAuth simply injects a fake authenticated user.
+// requireAuth and authenticateToken simply inject a fake authenticated user.
 jest.mock("../../middleware/auth", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    (req as any).user = { id: "user-123", role: "user" };
+    next();
+  },
+  authenticateToken: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
     (req as any).user = { id: "user-123", role: "user" };
     next();
   },
@@ -42,7 +46,7 @@ jest.mock("../../config/database", () => ({
   pool: { query: jest.fn() },
 }));
 
-import accountingRoutes from "../accounting";
+import { accountingRoutes } from "../accounting";
 
 function buildApp() {
   const app = express();

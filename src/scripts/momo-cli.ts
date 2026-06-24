@@ -11,6 +11,7 @@
 import { pool } from "../config/database";
 import { TransactionStatus } from "../models/transaction";
 import dotenv from "dotenv";
+import { addTransactionJob } from "../queue/index.js";
 
 dotenv.config();
 
@@ -137,8 +138,7 @@ export async function runCli(args: string[]): Promise<void> {
         `\n${colors.cyan}Re-queueing ${colors.bold}${retriable.length}${colors.reset} transaction(s) for retry...`,
       );
 
-      // Dynamically load BullMQ dependencies only when actually executing queue operation
-      const { addTransactionJob } = await import("../queue");
+
 
       for (const tx of retriable) {
         const prevStatus = tx.status;
@@ -194,7 +194,7 @@ if (require.main === module) {
       if (process.argv[2] === "retry-batch") {
         try {
           const { transactionQueue } =
-            await import("../queue/transactionQueue");
+            await import("../queue/transactionQueue.js");
           await transactionQueue.close();
         } catch {
           // ignore

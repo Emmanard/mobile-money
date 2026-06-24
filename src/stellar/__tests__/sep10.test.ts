@@ -14,6 +14,7 @@ import {
 } from "stellar-sdk";
 import { createSep10Router, Sep10Service, getSep10Config } from "../sep10";
 import { Networks } from "stellar-sdk";
+import { errorHandler } from "../../middleware/errorHandler";
 
 // Generate keypairs for testing
 const serverKeypair = Keypair.random();
@@ -74,8 +75,8 @@ function createMockAccountSingleSig(publicKey: string): any {
     thresholds: {
       master_weight: 1,
       low_threshold: 0,
-      med_threshold: 0,
-      high_threshold: 0,
+      med_threshold: 1,
+      high_threshold: 1,
     },
     signers: [
       {
@@ -861,6 +862,7 @@ describe("SEP-10 Stellar Authentication", () => {
       app = express();
       app.use(express.json());
       app.use("/auth", createSep10Router(service));
+      app.use(errorHandler);
     });
 
     describe("GET /auth", () => {
@@ -968,6 +970,7 @@ describe("SEP-10 Stellar Authentication", () => {
         const shortApp = express();
         shortApp.use(express.json());
         shortApp.use("/auth", createSep10Router(shortService));
+        shortApp.use(errorHandler);
 
         const challengeRes = await request(shortApp)
           .get("/auth")
@@ -1002,10 +1005,13 @@ describe("SEP-10 Stellar Authentication", () => {
 
   describe("End-to-End Auth Flow", () => {
     it("should complete the full SEP-10 authentication flow", async () => {
-      const service = createTestService();
+      const mockAccount = createMockAccountSingleSig(clientKeypair.publicKey());
+      const mockServer = createMockHorizonServer(mockAccount);
+      const service = createTestServiceWithMockedServer(mockServer);
       const app = express();
       app.use(express.json());
       app.use("/auth", createSep10Router(service));
+      app.use(errorHandler);
 
       // Step 1: Client requests challenge
       const challengeRes = await request(app)
@@ -1050,10 +1056,13 @@ describe("SEP-10 Stellar Authentication", () => {
     });
 
     it("should reject a challenge signed by wrong key", async () => {
-      const service = createTestService();
+      const mockAccount = createMockAccountSingleSig(clientKeypair.publicKey());
+      const mockServer = createMockHorizonServer(mockAccount);
+      const service = createTestServiceWithMockedServer(mockServer);
       const app = express();
       app.use(express.json());
       app.use("/auth", createSep10Router(service));
+      app.use(errorHandler);
 
       const challengeRes = await request(app)
         .get("/auth")
@@ -1071,7 +1080,7 @@ describe("SEP-10 Stellar Authentication", () => {
         .send({ transaction: challengeTx.toXDR() });
 
       expect(authRes.status).toBe(400);
-      expect(authRes.body.error).toContain("not signed by the client account");
+      expect(authRes.body.error).toContain("Signing threshold not met");
     });
   });
 
