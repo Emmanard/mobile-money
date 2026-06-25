@@ -243,6 +243,10 @@ export class LedgerService {
     settlementDate.setDate(settlementDate.getDate() + delayDays);
     const settlementDateStr = settlementDate.toISOString().split('T')[0];
 
+    // Compute conversion to base currency (USD) for amount and fee
+    const amountConversion = currencyService.convertToBase(amount, currency);
+    const feeConversion = currencyService.convertToBase(fee, currency);
+
     const entries: LedgerEntry[] = [
       {
         account_code: '1100', // Mobile Money Float
@@ -258,8 +262,8 @@ export class LedgerService {
         account_code: '2000', // Customer Balances
         credit_amount: amount - fee,
         description: 'Customer balance credited',
-        settlement_date: settlementDateStr
-      }
+        settlement_date: settlementDateStr,
+      },
     ];
 
     // Add fee revenue if applicable
@@ -283,7 +287,7 @@ export class LedgerService {
       transactionId,
       userId,
       currency,
-      amountConversion.rate
+      amountConversion.rate,
     );
   }
 
