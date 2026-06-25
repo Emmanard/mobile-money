@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "sync:openapi": "cp ../openapi.yaml ./static/openapi.yaml",
+    "sync:openapi": "node -e \"require('fs').copyFileSync('../openapi.yaml', './static/openapi.yaml')\"",
     "optimize:images": "node scripts/optimize-images.mjs",
     "start": "npm run sync:openapi && docusaurus start --port 3001",
     "build": "npm run optimize:images && npm run sync:openapi && docusaurus build",
