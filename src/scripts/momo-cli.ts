@@ -8,10 +8,12 @@
  *   retry-batch <batch_id>  – re-queue failed or stuck transactions belonging to a batch
  */
 
-import { pool } from "../config/database";
 import { TransactionStatus } from "../models/transaction";
 import dotenv from "dotenv";
-import { addTransactionJob } from "../queue/index.js";
+import fs from "fs/promises";
+import path from "path";
+import * as readline from "readline/promises";
+import { stdin as input, stdout as output } from "process";
 
 dotenv.config();
 
@@ -26,6 +28,236 @@ const colors = {
   gray: isTest ? "" : "\x1b[90m",
 };
 
+let activePool: { end: () => Promise<void> } | undefined;
+let activeTransactionQueue: { close: () => Promise<void> } | undefined;
+
+type SetupConfig = {
+  databaseUrl: string;
+  redisUrl: string;
+  stellarIssuerSecret: string;
+  stellarNetwork: "testnet" | "mainnet";
+  stellarHorizonUrl: string;
+};
+
+const DEFAULT_SETUP_CONFIG: SetupConfig = {
+  databaseUrl: "postgresql://postgres:postgres@localhost:5432/mobile_money",
+  redisUrl: "redis://localhost:6379",
+  stellarIssuerSecret: "",
+  stellarNetwork: "testnet",
+  stellarHorizonUrl: "https://horizon-testnet.stellar.org",
+};
+
+const CONFIG_KEYS: Record<keyof SetupConfig, string> = {
+  databaseUrl: "DATABASE_URL",
+  redisUrl: "REDIS_URL",
+  stellarIssuerSecret: "STELLAR_ISSUER_SECRET",
+  stellarNetwork: "STELLAR_NETWORK",
+  stellarHorizonUrl: "STELLAR_HORIZON_URL",
+};
+
+function getEnvPath(args: string[]): string {
+  const fileIndex = args.findIndex((arg) => arg === "--file" || arg === "-f");
+  const configuredPath = fileIndex >= 0 ? args[fileIndex + 1] : undefined;
+  return path.resolve(process.cwd(), configuredPath || ".env");
+}
+
+function validateUrl(value: string, label: string): void {
+  try {
+    new URL(value);
+  } catch {
+    throw new Error(`${label} must be a valid URL.`);
+  }
+}
+
+function normalizeNetwork(value: string): "testnet" | "mainnet" {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "testnet" || normalized === "mainnet") {
+    return normalized;
+  }
+
+  throw new Error("Stellar network must be testnet or mainnet.");
+}
+
+function horizonUrlForNetwork(network: "testnet" | "mainnet"): string {
+  return network === "mainnet"
+    ? "https://horizon.stellar.org"
+    : "https://horizon-testnet.stellar.org";
+}
+
+async function readEnvFile(filePath: string): Promise<string> {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return "";
+    }
+
+    throw err;
+  }
+}
+
+function serializeEnvValue(value: string): string {
+  if (/^[A-Za-z0-9_:/@.+,\-=]+$/.test(value)) {
+    return value;
+  }
+
+  return JSON.stringify(value);
+}
+
+export function upsertEnvContent(
+  existingContent: string,
+  updates: Record<string, string>,
+): string {
+  const pending = new Map(Object.entries(updates));
+  const lines = existingContent.replace(/\r\n/g, "\n").split("\n");
+  const outputLines: string[] = [];
+
+  for (const line of lines) {
+    if (!line.trim() && outputLines.length === 0) {
+      continue;
+    }
+
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (match && pending.has(match[1])) {
+      outputLines.push(`${match[1]}=${serializeEnvValue(pending.get(match[1])!)}`);
+      pending.delete(match[1]);
+      continue;
+    }
+
+    outputLines.push(line);
+  }
+
+  while (outputLines.length > 0 && outputLines[outputLines.length - 1] === "") {
+    outputLines.pop();
+  }
+
+  if (pending.size > 0) {
+    if (outputLines.length > 0) {
+      outputLines.push("");
+    }
+
+    outputLines.push("# Mobile Money setup");
+    for (const [key, value] of pending) {
+      outputLines.push(`${key}=${serializeEnvValue(value)}`);
+    }
+  }
+
+  return `${outputLines.join("\n")}\n`;
+}
+
+async function writeEnvConfig(filePath: string, config: SetupConfig): Promise<void> {
+  const existingContent = await readEnvFile(filePath);
+  const content = upsertEnvContent(existingContent, {
+    [CONFIG_KEYS.databaseUrl]: config.databaseUrl,
+    [CONFIG_KEYS.redisUrl]: config.redisUrl,
+    [CONFIG_KEYS.stellarIssuerSecret]: config.stellarIssuerSecret,
+    [CONFIG_KEYS.stellarNetwork]: config.stellarNetwork,
+    [CONFIG_KEYS.stellarHorizonUrl]: config.stellarHorizonUrl,
+  });
+
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.tmp-${process.pid}`;
+  await fs.writeFile(tempPath, content, { encoding: "utf8", mode: 0o600 });
+  await fs.rename(tempPath, filePath);
+}
+
+async function promptValue(
+  rl: readline.Interface,
+  message: string,
+  defaultValue: string,
+  validate: (value: string) => void = () => {},
+): Promise<string> {
+  while (true) {
+    const suffix = defaultValue ? ` (${defaultValue})` : "";
+    const answer = (await rl.question(`${message}${suffix}: `)).trim();
+    const value = answer || defaultValue;
+
+    try {
+      validate(value);
+      return value;
+    } catch (err) {
+      console.error(
+        `${colors.red}${err instanceof Error ? err.message : String(err)}${colors.reset}`,
+      );
+    }
+  }
+}
+
+async function promptSetupConfig(): Promise<SetupConfig> {
+  const rl = readline.createInterface({ input, output });
+
+  try {
+    console.log(`\n${colors.cyan}${colors.bold}Mobile Money Config Setup${colors.reset}`);
+    console.log(`${colors.gray}Database${colors.reset}`);
+
+    const databaseUrl = await promptValue(
+      rl,
+      "PostgreSQL connection URL",
+      process.env.DATABASE_URL || DEFAULT_SETUP_CONFIG.databaseUrl,
+      (value) => validateUrl(value, "DATABASE_URL"),
+    );
+
+    const redisUrl = await promptValue(
+      rl,
+      "Redis connection URL",
+      process.env.REDIS_URL || DEFAULT_SETUP_CONFIG.redisUrl,
+      (value) => validateUrl(value, "REDIS_URL"),
+    );
+
+    console.log(`\n${colors.gray}Stellar${colors.reset}`);
+
+    const stellarNetwork = normalizeNetwork(
+      await promptValue(
+        rl,
+        "Stellar network",
+        process.env.STELLAR_NETWORK || DEFAULT_SETUP_CONFIG.stellarNetwork,
+        (value) => {
+          normalizeNetwork(value);
+        },
+      ),
+    );
+
+    const stellarHorizonUrl = await promptValue(
+      rl,
+      "Stellar Horizon URL",
+      process.env.STELLAR_HORIZON_URL || horizonUrlForNetwork(stellarNetwork),
+      (value) => validateUrl(value, "STELLAR_HORIZON_URL"),
+    );
+
+    const stellarIssuerSecret = await promptValue(
+      rl,
+      "Stellar issuer secret key",
+      process.env.STELLAR_ISSUER_SECRET || DEFAULT_SETUP_CONFIG.stellarIssuerSecret,
+      (value) => {
+        if (!value.trim().startsWith("S")) {
+          throw new Error("STELLAR_ISSUER_SECRET should start with S.");
+        }
+      },
+    );
+
+    return {
+      databaseUrl,
+      redisUrl,
+      stellarIssuerSecret,
+      stellarNetwork,
+      stellarHorizonUrl,
+    };
+  } finally {
+    rl.close();
+  }
+}
+
+export async function runSetupCommand(args: string[]): Promise<void> {
+  const envPath = getEnvPath(args);
+  const config = await promptSetupConfig();
+
+  await writeEnvConfig(envPath, config);
+
+  console.log(
+    `\n${colors.green}${colors.bold}Saved configuration:${colors.reset} ${envPath}`,
+  );
+}
+
 export function showHelp() {
   console.log(`
 ${colors.cyan}${colors.bold}Mobile Money Admin CLI${colors.reset}
@@ -35,10 +267,12 @@ ${colors.bold}Usage:${colors.reset}
   momo-cli <command> [options]
 
 ${colors.bold}Commands:${colors.reset}
+  ${colors.green}setup${colors.reset}                    Interactive setup for database and Stellar credentials.
   ${colors.green}retry-batch <batch_id>${colors.reset}   Retry all failed or stuck transactions for a specific batch ID (UUID).
 
 ${colors.bold}Options:${colors.reset}
   --help, -h             Show this help information.
+  --file, -f <path>      Config file path for setup. Defaults to .env.
 `);
 }
 
@@ -48,6 +282,11 @@ export async function runCli(args: string[]): Promise<void> {
 
   if (!command || command === "--help" || command === "-h") {
     showHelp();
+    return;
+  }
+
+  if (command === "setup") {
+    await runSetupCommand(args.slice(1));
     return;
   }
 
@@ -70,6 +309,15 @@ export async function runCli(args: string[]): Promise<void> {
       process.exitCode = 1;
       return;
     }
+
+    const [{ pool }, queueModule, transactionQueueModule] = await Promise.all([
+      import("../config/database"),
+      import("../queue/index.js"),
+      import("../queue/transactionQueue.js"),
+    ]);
+    const { addTransactionJob } = queueModule;
+    activePool = pool;
+    activeTransactionQueue = transactionQueueModule.transactionQueue;
 
     console.log(
       `${colors.cyan}Searching for transactions in batch ${colors.bold}${batchId}${colors.reset}...`,
@@ -190,16 +438,8 @@ if (require.main === module) {
       await runCli(process.argv.slice(2));
     } finally {
       // Cleanly shutdown pool and queue connection so CLI exits instantly
-      await pool.end().catch(() => {});
-      if (process.argv[2] === "retry-batch") {
-        try {
-          const { transactionQueue } =
-            await import("../queue/transactionQueue.js");
-          await transactionQueue.close();
-        } catch {
-          // ignore
-        }
-      }
+      await activePool?.end().catch(() => {});
+      await activeTransactionQueue?.close().catch(() => {});
     }
   })();
 }
