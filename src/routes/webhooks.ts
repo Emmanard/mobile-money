@@ -1,6 +1,7 @@
 import logger from "../utils/logger";
 import { Router, Request, Response } from "express";
-import { createHmac, timingSafeEqual } from "crypto";
+import { createHmac, timingSafeEqual, verify, createPublicKey } from "crypto";
+import { Keypair } from "stellar-sdk";
 import { TransactionModel, TransactionStatus } from "../models/transaction";
 import { WebhookService, WebhookEvent } from "../services/webhook";
 import { ingestRateLimiter } from "../middleware/ingestRateLimit";
@@ -69,11 +70,31 @@ export const SAMPLE_WEBHOOK_PAYLOAD: FlatWebhookPayload = {
 };
 
 function verifyWebhookSignature(payload: string, signature: string | undefined, secret: string): boolean {
-  if (!signature || !signature.startsWith("sha256=")) return false;
-  const expectedSignature = signature.substring(7);
-  const computedSignature = createHmac("sha256", secret).update(payload).digest("hex");
-  if (expectedSignature.length !== computedSignature.length) return false;
-  return timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(computedSignature));
+  if (!signature) return false;
+
+  if (signature.startsWith("ed25519=")) {
+    const expectedSignature = signature.substring(8);
+    try {
+      if (secret.startsWith("G") && secret.length === 56) {
+        const kp = Keypair.fromPublicKey(secret);
+        return kp.verify(Buffer.from(payload), Buffer.from(expectedSignature, "hex"));
+      } else {
+        const key = createPublicKey(secret);
+        return verify(null, Buffer.from(payload), key, Buffer.from(expectedSignature, "hex"));
+      }
+    } catch (e) {
+      return false;
+    }
+  }
+
+  if (signature.startsWith("sha256=")) {
+    const expectedSignature = signature.substring(7);
+    const computedSignature = createHmac("sha256", secret).update(payload).digest("hex");
+    if (expectedSignature.length !== computedSignature.length) return false;
+    return timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(computedSignature));
+  }
+
+  return false;
 }
 
 /** GET /webhooks/settings - returns current compression toggle state */
@@ -124,8 +145,8 @@ router.get("/schema", (req: Request, res: Response) => {
       },
     },
     setup_instructions: {
-      zapier: { webhook_url: `${req.protocol}://${req.get("host")}/api/webhooks`, authentication: "X-Webhook-Signature header with HMAC-SHA256" },
-      make_com: { webhook_url: `${req.protocol}://${req.get("host")}/api/webhooks`, authentication: "X-Webhook-Signature header with HMAC-SHA256" },
+      zapier: { webhook_url: `${req.protocol}://${req.get("host")}/api/webhooks`, authentication: "X-Webhook-Signature header with HMAC-SHA256 (sha256=...) or ED25519 (ed25519=...)" },
+      make_com: { webhook_url: `${req.protocol}://${req.get("host")}/api/webhooks`, authentication: "X-Webhook-Signature header with HMAC-SHA256 (sha256=...) or ED25519 (ed25519=...)" },
     },
   });
 });

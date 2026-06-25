@@ -1,6 +1,7 @@
 import logger from "../utils/logger";
 import { Router, Request, Response } from "express";
-import { createHmac, timingSafeEqual } from "crypto";
+import { createHmac, timingSafeEqual, verify, createPublicKey } from "crypto";
+import { Keypair } from "stellar-sdk";
 import { z } from "zod";
 import { TransactionModel, TransactionStatus } from "../models/transaction";
 import { notifyTransactionWebhook, WebhookEvent } from "../services/webhook";
@@ -46,23 +47,40 @@ function verifyWebhookSignature(
   signature: string | undefined,
   secret: string,
 ): boolean {
-  if (!signature || !signature.startsWith("sha256=")) {
-    return false;
+  if (!signature) return false;
+
+  if (signature.startsWith("ed25519=")) {
+    const expectedSignature = signature.substring(8);
+    try {
+      if (secret.startsWith("G") && secret.length === 56) {
+        const kp = Keypair.fromPublicKey(secret);
+        return kp.verify(Buffer.from(payload), Buffer.from(expectedSignature, "hex"));
+      } else {
+        const key = createPublicKey(secret);
+        return verify(null, Buffer.from(payload), key, Buffer.from(expectedSignature, "hex"));
+      }
+    } catch (e) {
+      return false;
+    }
   }
 
-  const expectedSignature = signature.substring(7);
-  const computedSignature = createHmac("sha256", secret)
-    .update(payload)
-    .digest("hex");
+  if (signature.startsWith("sha256=")) {
+    const expectedSignature = signature.substring(7);
+    const computedSignature = createHmac("sha256", secret)
+      .update(payload)
+      .digest("hex");
 
-  if (expectedSignature.length !== computedSignature.length) {
-    return false;
+    if (expectedSignature.length !== computedSignature.length) {
+      return false;
+    }
+
+    return timingSafeEqual(
+      Buffer.from(expectedSignature),
+      Buffer.from(computedSignature),
+    );
   }
 
-  return timingSafeEqual(
-    Buffer.from(expectedSignature),
-    Buffer.from(computedSignature),
-  );
+  return false;
 }
 
 router.post("/webhook", async (req: RawBodyRequest, res: Response) => {
