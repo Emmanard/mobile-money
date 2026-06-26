@@ -39,9 +39,6 @@ type RotatingStreamFactory = (
   },
 ) => DestinationStream;
 
-const { createStream } = require('rotating-file-stream') as {
-  createStream: RotatingStreamFactory;
-};
 
 const LOG_LEVEL = (process.env.LOG_LEVEL ?? 'info') as Level;
 const LOG_DIR = process.env.LOG_DIR ?? path.join(process.cwd(), 'logs');
@@ -74,6 +71,10 @@ function ensureLogDirectory(): void {
 
 function buildFileStream(): DestinationStream {
   ensureLogDirectory();
+
+  const { createStream } = require('rotating-file-stream') as {
+    createStream: RotatingStreamFactory;
+  };
 
   return createStream(logFileName, {
     path: LOG_DIR,

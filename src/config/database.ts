@@ -142,9 +142,9 @@ class SlowQueryPool extends Pool {
  */
 export const pool = new Pool({
   connectionString: IS_SANDBOX ? (SANDBOX_DATABASE_URL || DATABASE_URL) : DATABASE_URL,
-  max: 1000,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 500,
+  max: 50,
+  idleTimeoutMillis: 15000,
+  connectionTimeoutMillis: 5000,
   ssl: productionSsl,
 });
 

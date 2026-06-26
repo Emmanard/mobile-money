@@ -7,7 +7,7 @@ import mockServerConfig from "../src/config/mockServer";
 type MockScenario = "success" | "failed" | "pending";
 
 interface StoredTransaction {
-  provider: "mtn" | "airtel";
+  provider: "mtn" | "airtel" | "vodacom" | "tigo";
   scenario: MockScenario;
   createdAt: string;
 }
@@ -182,7 +182,7 @@ export function createProviderMockApp() {
   app.get("/health", (_req: Request, res: Response) => {
     res.json({
       status: "ok",
-      providers: ["mtn", "airtel"],
+      providers: ["mtn", "airtel", "vodacom", "tigo"],
     });
   });
 
@@ -288,7 +288,7 @@ export function createProviderMockApp() {
   );
 
   app.post(
-    "/airtel/merchant/v1/payments/",
+    ["/airtel/merchant/v1/payments/", "/airtel/:countryCode/merchant/v1/payments/"],
     async (req: Request<unknown, unknown, MockRequestBody>, res: Response) => {
       await applyDelay(req);
 
@@ -340,7 +340,7 @@ export function createProviderMockApp() {
   );
 
   app.get(
-    "/airtel/standard/v1/payments/:reference",
+    ["/airtel/standard/v1/payments/:reference", "/airtel/:countryCode/standard/v1/payments/:reference"],
     async (
       req: Request<{ reference: string }, unknown, MockRequestBody>,
       res: Response,
@@ -366,7 +366,7 @@ export function createProviderMockApp() {
   );
 
   app.get(
-    "/airtel/standard/v1/users/balance",
+    ["/airtel/standard/v1/users/balance", "/airtel/:countryCode/standard/v1/users/balance"],
     async (req: Request<unknown, unknown, MockRequestBody>, res: Response) => {
       await applyDelay(req);
 
@@ -394,7 +394,7 @@ export function createProviderMockApp() {
   );
 
   app.post(
-    "/airtel/standard/v1/disbursements/",
+    ["/airtel/standard/v1/disbursements/", "/airtel/:countryCode/standard/v1/disbursements/"],
     async (req: Request<unknown, unknown, MockRequestBody>, res: Response) => {
       await applyDelay(req);
 
@@ -445,7 +445,263 @@ export function createProviderMockApp() {
     },
   );
 
+  // ─── Vodacom Mock Endpoints ──────────────────────────────────────────────────
+
+  app.post(
+    "/vodacom/auth/token",
+    async (req: Request, res: Response) => {
+      await applyDelay(req);
+      res.json({
+        access_token: "mock-vodacom-access-token",
+        expires_in: 3600,
+      });
+    }
+  );
+
+  app.post(
+    "/vodacom/c2b/v1/payment",
+    async (req: Request<unknown, unknown, MockRequestBody>, res: Response) => {
+      await applyDelay(req);
+      const scenario = getScenario(req);
+      const referenceId = getReferenceId(req, "vodacom-c2b");
+
+      transactions.set(referenceId, {
+        provider: "vodacom",
+        scenario,
+        createdAt: new Date().toISOString(),
+      });
+
+      if (scenario === "failed") {
+        return res.status(400).json({
+          status: "FAILED",
+          referenceId,
+          message: "Mock Vodacom payment failure",
+        });
+      }
+
+      return res.status(202).json({
+        status: getVodacomStatus(scenario),
+        referenceId,
+        message: "Mock Vodacom payment accepted",
+      });
+    }
+  );
+
+  app.get(
+    "/vodacom/c2b/v1/payment/:referenceId",
+    async (
+      req: Request<{ referenceId: string }, unknown, MockRequestBody>,
+      res: Response,
+    ) => {
+      await applyDelay(req);
+      const stored = transactions.get(req.params.referenceId);
+      const scenario = stored?.scenario || getScenario(req);
+
+      return res.json({
+        referenceId: req.params.referenceId,
+        status: getVodacomStatus(scenario),
+      });
+    }
+  );
+
+  app.post(
+    "/vodacom/b2c/v1/payment",
+    async (req: Request<unknown, unknown, MockRequestBody>, res: Response) => {
+      await applyDelay(req);
+      const scenario = getScenario(req);
+      const referenceId = getReferenceId(req, "vodacom-b2c");
+
+      transactions.set(referenceId, {
+        provider: "vodacom",
+        scenario,
+        createdAt: new Date().toISOString(),
+      });
+
+      if (scenario === "failed") {
+        return res.status(400).json({
+          status: "FAILED",
+          referenceId,
+          message: "Mock Vodacom disbursement failure",
+        });
+      }
+
+      return res.status(202).json({
+        status: getVodacomStatus(scenario),
+        referenceId,
+        message: "Mock Vodacom disbursement accepted",
+      });
+    }
+  );
+
+  app.get(
+    "/vodacom/b2c/v1/payment/:referenceId",
+    async (
+      req: Request<{ referenceId: string }, unknown, MockRequestBody>,
+      res: Response,
+    ) => {
+      await applyDelay(req);
+      const stored = transactions.get(req.params.referenceId);
+      const scenario = stored?.scenario || getScenario(req);
+
+      return res.json({
+        referenceId: req.params.referenceId,
+        status: getVodacomStatus(scenario),
+      });
+    }
+  );
+
+  app.get(
+    "/vodacom/balance",
+    async (req: Request, res: Response) => {
+      await applyDelay(req);
+      const scenario = getScenario(req);
+      if (scenario === "failed") {
+        return res.status(503).json({
+          message: "Mock Vodacom balance service unavailable",
+        });
+      }
+      res.json({
+        availableBalance: DEFAULT_BALANCE,
+        currency: "TZS",
+      });
+    }
+  );
+
+  // ─── Tigo Mock Endpoints ─────────────────────────────────────────────────────
+
+  app.post(
+    "/tigo/auth/token",
+    async (req: Request, res: Response) => {
+      await applyDelay(req);
+      res.json({
+        access_token: "mock-tigo-access-token",
+        expires_in: 3600,
+      });
+    }
+  );
+
+  app.post(
+    "/tigo/payment",
+    async (req: Request<unknown, unknown, MockRequestBody>, res: Response) => {
+      await applyDelay(req);
+      const scenario = getScenario(req);
+      const referenceId = getReferenceId(req, "tigo-payment");
+
+      transactions.set(referenceId, {
+        provider: "tigo",
+        scenario,
+        createdAt: new Date().toISOString(),
+      });
+
+      if (scenario === "failed") {
+        return res.status(400).json({
+          status: "FAILED",
+          referenceId,
+          message: "Mock Tigo payment failure",
+        });
+      }
+
+      return res.status(200).json({
+        status: getTigoStatus(scenario),
+        referenceId,
+        message: "Mock Tigo payment success",
+      });
+    }
+  );
+
+  app.get(
+    "/tigo/payment/:referenceId",
+    async (
+      req: Request<{ referenceId: string }, unknown, MockRequestBody>,
+      res: Response,
+    ) => {
+      await applyDelay(req);
+      const stored = transactions.get(req.params.referenceId);
+      const scenario = stored?.scenario || getScenario(req);
+
+      return res.json({
+        referenceId: req.params.referenceId,
+        status: getTigoStatus(scenario),
+      });
+    }
+  );
+
+  app.post(
+    "/tigo/disbursement",
+    async (req: Request<unknown, unknown, MockRequestBody>, res: Response) => {
+      await applyDelay(req);
+      const scenario = getScenario(req);
+      const referenceId = getReferenceId(req, "tigo-disbursement");
+
+      transactions.set(referenceId, {
+        provider: "tigo",
+        scenario,
+        createdAt: new Date().toISOString(),
+      });
+
+      if (scenario === "failed") {
+        return res.status(400).json({
+          status: "FAILED",
+          referenceId,
+          message: "Mock Tigo disbursement failure",
+        });
+      }
+
+      return res.status(200).json({
+        status: getTigoStatus(scenario),
+        referenceId,
+        message: "Mock Tigo disbursement success",
+      });
+    }
+  );
+
+  app.get(
+    "/tigo/disbursement/:referenceId",
+    async (
+      req: Request<{ referenceId: string }, unknown, MockRequestBody>,
+      res: Response,
+    ) => {
+      await applyDelay(req);
+      const stored = transactions.get(req.params.referenceId);
+      const scenario = stored?.scenario || getScenario(req);
+
+      return res.json({
+        referenceId: req.params.referenceId,
+        status: getTigoStatus(scenario),
+      });
+    }
+  );
+
+  app.get(
+    "/tigo/balance",
+    async (req: Request, res: Response) => {
+      await applyDelay(req);
+      const scenario = getScenario(req);
+      if (scenario === "failed") {
+        return res.status(503).json({
+          message: "Mock Tigo balance service unavailable",
+        });
+      }
+      res.json({
+        availableBalance: DEFAULT_BALANCE,
+        currency: "TZS",
+      });
+    }
+  );
+
   return app;
+}
+
+function getVodacomStatus(scenario: MockScenario): "SUCCESSFUL" | "FAILED" | "PENDING" {
+  if (scenario === "failed") return "FAILED";
+  if (scenario === "pending") return "PENDING";
+  return "SUCCESSFUL";
+}
+
+function getTigoStatus(scenario: MockScenario): "SUCCESS" | "FAILED" | "PENDING" {
+  if (scenario === "failed") return "FAILED";
+  if (scenario === "pending") return "PENDING";
+  return "SUCCESS";
 }
 
 export function startProviderMockServer(port = DEFAULT_PORT): Server {

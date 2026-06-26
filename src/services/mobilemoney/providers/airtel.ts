@@ -105,17 +105,57 @@ export class AirtelService {
   private mode: AirtelMode;
   private token: string | null = null;
   private tokenExpiry: number = 0;
+  private countryCode: string;
+  private currency: string;
+  private apiKey: string;
+  private apiSecret: string;
   private session: AirtelSessionState | null = null;
   private sessionPromise: Promise<AirtelSessionState> | null = null;
   private readonly clock: () => number;
 
-  constructor(options: AirtelProviderOptions = {}) {
-    this.clock = options.clock ?? Date.now;
-    this.config = this.buildConfig(options);
+  constructor(regionOrOptions?: string | AirtelProviderOptions, options?: AirtelProviderOptions) {
+    let region: string | undefined;
+    let opts: AirtelProviderOptions = {};
+
+    if (typeof regionOrOptions === "string") {
+      region = regionOrOptions;
+      opts = options || {};
+    } else if (regionOrOptions && typeof regionOrOptions === "object") {
+      opts = regionOrOptions;
+      region = opts.region || opts.country;
+    }
+
+    this.clock = opts.clock ?? Date.now;
+    this.config = this.buildConfig(opts);
+
+    // Resolve dynamic region configuration
+    this.countryCode = (region || opts.country || process.env.AIRTEL_COUNTRY || "NG").toUpperCase();
+    this.currency = process.env[`AIRTEL_CURRENCY_${this.countryCode}`] || opts.currency || process.env.AIRTEL_CURRENCY || this.getDefaultCurrency(this.countryCode);
+    this.apiKey = process.env[`AIRTEL_API_KEY_${this.countryCode}`] || opts.apiKey || process.env.AIRTEL_API_KEY || "";
+    this.apiSecret = process.env[`AIRTEL_API_SECRET_${this.countryCode}`] || opts.apiSecret || process.env.AIRTEL_API_SECRET || "";
+
+    // Update config with resolved region values
+    this.config.country = this.countryCode;
+    this.config.currency = this.currency;
+    this.config.apiKey = this.apiKey;
+    this.config.apiSecret = this.apiSecret;
+
+    // Apply country prefix routing to config paths
+    const prefix = `/${this.countryCode.toLowerCase()}`;
+    if (this.config.paymentPath && !this.config.paymentPath.startsWith(prefix)) {
+      this.config.paymentPath = `${prefix}${this.config.paymentPath}`;
+    }
+    if (this.config.payoutPath && !this.config.payoutPath.startsWith(prefix)) {
+      this.config.payoutPath = `${prefix}${this.config.payoutPath}`;
+    }
+    if (this.config.statusPath && !this.config.statusPath.startsWith(prefix)) {
+      this.config.statusPath = `${prefix}${this.config.statusPath}`;
+    }
+
     this.mode = this.resolveMode();
 
     this.client =
-      options.httpClient ??
+      opts.httpClient ??
       axios.create({
         baseURL: this.config.webBaseUrl,
         timeout: this.config.requestTimeoutMs,
@@ -124,7 +164,7 @@ export class AirtelService {
       });
 
     this.directClient =
-      options.directHttpClient ??
+      opts.directHttpClient ??
       axios.create({
         baseURL: this.config.directBaseUrl,
         timeout: this.config.requestTimeoutMs,
@@ -133,7 +173,7 @@ export class AirtelService {
 
     if (this.config.proxyBaseUrl) {
       this.proxyClient =
-        options.proxyHttpClient ??
+        opts.proxyHttpClient ??
         axios.create({
           baseURL: this.config.proxyBaseUrl,
           timeout: this.config.requestTimeoutMs,
@@ -141,7 +181,17 @@ export class AirtelService {
         });
     }
 
-    logger.info({ mode: this.mode }, "AirtelService initialized");
+    logger.info({ mode: this.mode, country: this.countryCode }, "AirtelService initialized");
+  }
+
+  private getDefaultCurrency(country: string): string {
+    switch (country.toUpperCase()) {
+      case "KE": return "KES";
+      case "UG": return "UGX";
+      case "TZ": return "TZS";
+      case "NG": return "NGN";
+      default: return "NGN";
+    }
   }
 
   // =========================================================================
@@ -362,6 +412,7 @@ export class AirtelService {
    * REQUEST PAYMENT (COLLECTION)
    * =========================
    */
+
   async getTransactionStatus(
     reference: string,
   ): Promise<{ status: "completed" | "failed" | "pending" | "unknown" }> {
@@ -408,7 +459,7 @@ export class AirtelService {
 
     const authHeader =
       "Basic " +
-      Buffer.from(`${this.config.apiKey}:${this.config.apiSecret}`).toString(
+      Buffer.from(`${this.apiKey}:${this.apiSecret}`).toString(
         "base64",
       );
 
@@ -460,14 +511,14 @@ export class AirtelService {
           ? {
               reference,
               subscriber: {
-                country: this.config.country,
-                currency: this.config.currency,
+                country: this.countryCode,
+                currency: this.currency,
                 msisdn: phoneNumber,
               },
               transaction: {
                 amount: parseFloat(amount),
-                country: this.config.country,
-                currency: this.config.currency,
+                country: this.countryCode,
+                currency: this.currency,
                 id: reference,
               },
             }
@@ -505,8 +556,8 @@ export class AirtelService {
           headers: {
             ...requestHeaders,
             Authorization: `Bearer ${token}`,
-            "X-Country": this.config.country,
-            "X-Currency": this.config.currency,
+            "X-Country": this.countryCode,
+            "X-Currency": this.currency,
             "Content-Type":
               requestHeaders["Content-Type"] ?? "application/json",
           },
@@ -559,7 +610,7 @@ export class AirtelService {
   }> {
     const response = await this.requestDirectWithRetry({
       method: "GET",
-      url: "/standard/v1/users/balance",
+      url: `/${this.countryCode.toLowerCase()}/standard/v1/users/balance`,
     });
 
     if (response.status < 200 || response.status >= 300) {
@@ -590,7 +641,7 @@ export class AirtelService {
       success: true,
       data: {
         availableBalance,
-        currency: data.data?.currency || data.currency || this.config.currency,
+        currency: data.data?.currency || data.currency || this.currency,
       },
     };
   }
@@ -722,14 +773,14 @@ export class AirtelService {
             ? {
                 reference,
                 subscriber: {
-                  country: this.config.country,
-                  currency: this.config.currency,
+                  country: this.countryCode,
+                  currency: this.currency,
                   msisdn: phoneNumber,
                 },
                 transaction: {
                   amount: parseFloat(amount),
-                  country: this.config.country,
-                  currency: this.config.currency,
+                  country: this.countryCode,
+                  currency: this.currency,
                   id: reference,
                 },
               }
@@ -828,7 +879,7 @@ export class AirtelService {
     const response = await this.requestWithSessionAndRetry(
       {
         method: "GET",
-        url: "/standard/v1/users/balance",
+        url: `/${this.countryCode.toLowerCase()}/standard/v1/users/balance`,
       },
       "payment",
     );
@@ -861,7 +912,7 @@ export class AirtelService {
       success: true,
       data: {
         availableBalance,
-        currency: data.data?.currency || data.currency || this.config.currency,
+        currency: data.data?.currency || data.currency || this.currency,
       },
     };
   }
@@ -902,14 +953,14 @@ export class AirtelService {
           ? {
               reference,
               subscriber: {
-                country: this.config.country,
-                currency: this.config.currency,
+                country: this.countryCode,
+                currency: this.currency,
                 msisdn: phoneNumber,
               },
               transaction: {
                 amount: parseFloat(amount),
-                country: this.config.country,
-                currency: this.config.currency,
+                country: this.countryCode,
+                currency: this.currency,
                 id: reference,
               },
             }
@@ -957,7 +1008,7 @@ export class AirtelService {
 
     const response = await this.sendRequest(this.proxyClient, {
       method: "GET",
-      url: "/standard/v1/users/balance",
+      url: `/${this.countryCode.toLowerCase()}/standard/v1/users/balance`,
       headers: this.config.proxySecret
         ? { "X-Airtel-Proxy-Secret": this.config.proxySecret }
         : undefined,

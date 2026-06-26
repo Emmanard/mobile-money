@@ -33,7 +33,11 @@ const config: Config = {
     [
       'classic',
       {
-        docs: false,
+        docs: {
+          sidebarPath: './sidebars.ts',
+          path: '../docs',
+          routeBasePath: 'docs',
+        },
         blog: false,
         theme: {
           customCss: './src/css/custom.css',
@@ -65,6 +69,12 @@ const config: Config = {
       title: 'Mobile Money API',
       items: [
         { to: '/', label: 'Overview', position: 'left' },
+        {
+          type: 'docSidebar',
+          sidebarId: 'docsSidebar',
+          position: 'left',
+          label: 'Guides',
+        },
         { to: '/api', label: 'Reference', position: 'left' },
         { to: '/graphql', label: 'GraphQL Playground', position: 'left' },
         {
