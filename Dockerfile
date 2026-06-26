@@ -2,6 +2,7 @@
 # Stage 1: Build - Compile TypeScript
 # =============================================================================
 FROM node:24-alpine AS builder
+RUN apk upgrade --no-cache
 WORKDIR /app
 COPY package*.json ./
 # Install ALL dependencies (including devDependencies) required for building
@@ -13,6 +14,7 @@ RUN npm run build
 # Stage 2: Dependencies - Install ONLY production modules
 # =============================================================================
 FROM node:24-alpine AS deps
+RUN apk upgrade --no-cache
 WORKDIR /app
 COPY package*.json ./
 
@@ -39,6 +41,7 @@ RUN npm ci --omit=dev --omit=optional --ignore-scripts && \
 # Stage 3: Production Runtime - Minimal final image
 # =============================================================================
 FROM node:24-alpine AS production
+RUN apk upgrade --no-cache
 ENV NODE_ENV=production
 
 # Create non-root user for security
